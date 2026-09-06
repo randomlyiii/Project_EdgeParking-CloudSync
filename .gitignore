@@ -1,0 +1,15 @@
+Task.md
+.metadata
+
+# ---- STM32CubeMX / CubeIDE 构建产物（可随时由 IDE 重建）----
+Debug/
+Release/
+build/
+*.o
+*.d
+*.elf
+*.map
+*.lst
+*.su
+*.cyclo
+*.ioc.bak
