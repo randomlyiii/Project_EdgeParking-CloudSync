@@ -40,7 +40,7 @@
 | d[1] | 上电秒数低 8 位（辅助判复位） |
 
 - 超时：主端 3s 无 0x210 → 判从节点离线并上报 A7；从端不判主端。
-- 位时序：C8T6 = 36MHz/9/(1+5+2) 采样点 75%；M4 = PLL3 100MHz/40/(1+3+1) 采样点 80%。
+- 位时序：C8T6 = 36MHz/9/(1+5+2) 采样点 75%；M4 = FDCAN 内核时钟**随运行环境不同**——工程模式(CubeIDE)=PLL3Q 100MHz(.ioc)，Linux 引导/remoteproc=62.5MHz(实测)——固件启动时实测并自动换算 500k（`m4_fw` fdcan.c `FDCAN2_AutotuneBitTiming`；100MHz→Prescaler40/(1+3+1)/80%，62.5MHz→Prescaler25/(1+3+1)/80%）。
 
 ## 2. K210 UART（K210 ↔ Core1）—— 第5步开发中（2026-09-07 拷入，`k210_fw/` 骨架已生成）
 
@@ -103,3 +103,4 @@
 |---|---|---|
 | 2026-09-07 | 初建：从母本拷入 CAN（§1）与 K210 UART（§2）；含 CRC16=XMODEM / seq 计数 / 0x02 用途字节 / 0xC3 语义定版 | C8T6 / M4 / K210 / Core1 |
 | 2026-09-07 | RPMSG 拷入为 §3：payload ≤480B；0x11/0x12/0x13 空；0x21=id(4B LE)+dlc(1B)+data(8B)+tick(4B LE)；0x22=1B；0x23=闸(1B)/在线(1B)/CAN错误计数 u16 LE；0x7E=1B 序号；1s 无有效帧 LINK_DOWN。对应 `core0_service/rpmsg/` 代码落地（待板端编译联调） | Core0 / M4 |
+| 2026-09-08 | M4 位时序二次更正：运行环境时钟不同（工程模式=PLL3Q 100MHz，Linux 引导=62.5MHz），静态配法不可两全 → 改为启动实测 + 自动换算（FDCAN2_AutotuneBitTiming） | M4 |
