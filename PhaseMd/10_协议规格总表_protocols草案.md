@@ -8,6 +8,8 @@
 | 帧头 0xAA 0x55 | type(1B) | seq(2B LE) | len(2B LE) | payload(len B) | CRC16(2B, 校验 type..payload) |
 ```
 - 字节序：多字节字段小端（CAN 帧 lux 字段例外，按 CAN 章约定大端）。
+- CRC16：**XMODEM**（poly 0x1021，init 0x0000，不反射、输出无异或）；帧尾 2B **低字节在前**；校验范围 type..payload（不含帧头）。
+- seq：按（type 通道）独立计数；预览块 0x01 与帧尾 0x02 **共用预览计数器、单调递增**（接收端靠 seq 跳变丢帧）；其余 type 各自从 0 起。
 - MTU：RPMSG ≤496B；UART 单帧 payload ≤1KB；超长分块同 seq 连发。
 
 ## 1. CAN 总线（C8T6 ↔ M4）—— 第2步实现
@@ -40,25 +42,28 @@
 ## 2. RPMSG（M4 ↔ Core0）—— 第3步实现
 
 - 通道：`/dev/ttyRPMSG0`，raw 模式；M4 侧 OpenAMP endpoint。
+- 帧 = 通用格式；**单帧 payload ≤480B**（总帧 ≤489B < ttyRPMSG0 MTU≈496B；本表无超长消息，跨帧分块规则预留，0x14 TLV 落地时再定块头）。
 - 下行（Core0→M4）type：
 
 | type | 含义 | payload |
 |---|---|---|
-| 0x11 | 开闸 | 空（d[0]=0x01 由 M4 转 CAN） |
-| 0x12 | 关闸 | 空 |
+| 0x11 | 开闸 | 空（M4 转 CAN 0x100 d[0]=0x01） |
+| 0x12 | 关闸 | 空（M4 转 CAN 0x100 d[0]=0x02） |
 | 0x13 | 查询全量状态 | 空 → M4 回 0x23 |
 | 0x14 | 配置下发（预留） | TLV |
 
 - 上行（M4→Core0）type：
 
-| type | 含义 | payload |
+| type | 含义 | payload 布局（偏移从 0 起，多字节小端） |
 |---|---|---|
-| 0x21 | CAN 事件转发 | CAN id(4B)+dlc(1B)+8B data+tick(4B) |
-| 0x22 | 从节点离线/恢复 | 1B（0=离线 1=恢复） |
-| 0x23 | M4 全量状态 | 闸状态/从节点在线/错误计数 |
-| 0x7E | 双向心跳（500ms） | 1B 序号 |
+| 0x21 | CAN 事件转发 | 共 17B：`id[0..3]=CAN ID u32 LE` ｜ `dlc[4]=数据长度` ｜ `data[5..12]=8B 数据域（未用 0 填充）` ｜ `tick[13..16]=M4 本地毫秒 u32 LE` |
+| 0x22 | 从节点离线/恢复 | 1B：0=离线 1=恢复在线 |
+| 0x23 | M4 全量状态 | 共 4B：`b0=闸状态(0 关/1 开)` ｜ `b1=从节点在线(0 离线/1 在线)` ｜ `b2..b3=CAN 错误累计计数 u16 LE（饱和）` |
+| 0x7E | 双向心跳（500ms） | 1B 序号（0..255 循环；发送方逐帧 +1，与帧头 seq 同向保鲜） |
 
-- 心跳：双向 500ms；任一侧 1s 未收到 → LINK_DOWN；恢复后收方发 0x13/查询重同步。
+- 0x21 的 `data` 按 CAN 章语义解释（0x200/0x210 的 d[0..4]：event/lux/drop/状态位），0x200 的 lux 在 CAN 内为大端、进 RPMSG 后仍按 CAN 字节原样搬运，不做字节序转换。
+- 心跳：双向 500ms；**任一侧 1s 未收到任何有效帧 → LINK_DOWN**（0x7E 或 0x21 转发均可保鲜）；恢复后收方发 0x13 查询重同步。
+- seq：发送方按 type 各自计数、单调递增；接收方按 type 记录 last_seq，跳变即计入丢帧统计（0x7E 双向各自计数不互扰）。
 
 ## 3. K210 UART（K210 ↔ Core1）—— 第5步实现
 
@@ -68,13 +73,15 @@
 | type | 方向 | 含义 | payload |
 |---|---|---|---|
 | 0x01 | ↑ | 预览 JPEG 块 | JPEG 分块数据 |
-| 0x02 | ↑ | 预览帧尾标记 | 4B 本帧总长 |
+| 0x02 | ↑ | 预览帧尾标记 | 4B 本帧总长(LE) + 1B 用途（0=预览帧 / 1=识别抓拍帧） |
 | 0xC1 | ↓ | CMD_RECOGNIZE 抓拍识别 | 空 |
 | 0xC2 | ↑ | 识别结果 | JSON：`{"plate":"...","confidence":0.93,"ts":...}` |
-| 0xC3 | ↑ | 识别失败 | 抓拍 JPEG + `{"error":"no_plate"}` |
+| 0xC3 | ↑ | 识别失败 | 失败 JSON：`{"error":"no_plate"}` 等（单帧 ≤1KB） |
 | 0x7E | 双向 | 心跳/状态 | bit0 busy（识别中） |
 
 - 丢帧策略：seq 跳变容忍（预览流可直接丢）；识别线一次触发一次结果，busy 期间新触发丢弃。
+- 抓拍 JPEG 上送：识别失败/低置信时，JPEG 数据走 0x01/0x02（用途=1）连发，随后 0xC3 带失败 JSON —— Core1 依"用途=1 的完整 JPEG = 供云兜底的抓拍图"处理；0x02 重组规则与预览一致（读前 4B 总长即可）。
+- ts 语义：K210 上电毫秒计数（utime.ticks_ms），非墙钟。
 
 ## 4. Modbus-TCP 寄存器表（Core0 ↔ 上位机）—— 第4步实现
 
@@ -125,3 +132,5 @@ typedef struct {
 | 日期 | 变更 | 影响端 |
 |---|---|---|
 | （建表日） | 初版随 PhaseMd 建立 | — |
+| 2026-09-07 | K210 UART 定版：0x02 尾扩 1B 用途（0 预览 / 1 抓拍）；0xC3 改为仅失败 JSON（抓拍 JPEG 走 0x01/0x02 用途=1）；定 CRC16=XMODEM、seq 按 type 通道计数（0x01/0x02 共用预览单调计数）、ts=上电毫秒；固件路线定 CanMV MicroPython（不影响帧格式） | K210 / Core1 |
+| 2026-09-07 | RPMSG §2 定版（Linux 侧先行）：单帧 payload ≤480B；0x11/0x12/0x13 空 payload；0x21=id(4B LE)+dlc(1B)+data(8B)+tick(4B LE)；0x22=1B；0x23=闸(1B)/在线(1B)/CAN错误计数 u16 LE；0x7E=1B 序号；1s 无有效帧即 LINK_DOWN；0x23 布局供 M4 第3步实现照做 | Core0 / M4 |

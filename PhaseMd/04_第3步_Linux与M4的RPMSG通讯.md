@@ -47,7 +47,9 @@ HAL_FDCAN_AddTxMessage(&hfdcan1, &th, d, NULL);
 
 ## 3. Linux（Core0）侧任务
 
-### P3-05 remoteproc 加载 M4 固件 ⬜
+> 2026-09-07：P3-05~P3-11 代码已全部落地 `core0_service/`（`rpmsg/rpmsg_proto|link|demo`、`tools/rpmsg_cli`、`tools/load_m4.sh`、`Makefile`），状态 = 🟨 **代码就绪待板端编译联调**；协议已随本步拷入 `docs/protocols.md` §3。
+
+### P3-05 remoteproc 加载 M4 固件 🟨（脚本已备，待板验）
 ```sh
 cp m4_fw.elf /lib/firmware/
 echo stop  > /sys/class/remoteproc/remoteprocX/state   # 若已运行
@@ -55,37 +57,36 @@ echo start > /sys/class/remoteproc/remoteprocX/state   # X 按实际（dmesg 确
 dmesg | tail          # 应见 remoteproc/virtio rpmsg 探测日志
 ls /dev/ttyRPMSG0     # 通道就绪标志
 ```
+- 已落地：`core0_service/tools/load_m4.sh`（start/stop/status + 自动等待 `/dev/ttyRPMSG0`，FW/RP 可环境变量覆盖）。
 - 失败排查：rsc_table 缺失、固件路径/权限、内核 CONFIG_RPMSG_CHAR。
 - **验收**：重启 5 次均稳定出 `/dev/ttyRPMSG0`。
 
-### P3-06 通道初始化（`core0_service/rpmsg/`）⬜
-- `open("/dev/ttyRPMSG0", O_RDWR | O_NOCTTY | O_NONBLOCK)`，termios raw；
-- 接收环形缓冲 ≥8KB；读写用 epoll 单线程（与第4步业务的事件循环汇合）或独立收发线程。
+### P3-06 通道初始化（`core0_service/rpmsg/`）🟨
+- `rpmsg_link.c`：`open("/dev/ttyRPMSG0", O_RDWR | O_NOCTTY | O_NONBLOCK)` + termios raw（非 tty 自动跳过）；独立 RX 线程 poll(fd+wakePipe)；写侧带锁线程安全。
+- 接收缓冲：拆帧累积缓冲 2048B（≥2 帧上限）；读写模式=独立收发线程（第4步 P4-01 需要 epoll 汇合时，业务经 `on_frame` 回调入队即可，本模块不持锁调用用户回调）。
 - **验收**：M4 心跳帧能收到。
 
-### P3-07 帧协议实现 ⬜
-- RX 状态机：帧头→type→seq→len→payload→CRC16；粘包处理；seq 连续性统计（丢帧计数）。
-- TX：组帧 + CRC；MTU 检查（≤496B，超长分块）。
+### P3-07 帧协议实现 🟨
+- `rpmsg_proto.c`：RX 状态机（帧头→type→seq→len→payload→CRC16）、粘包处理、坏帧丢弃+计数、seq 连续性统计（丢帧计数）；CRC16=XMODEM。
+- TX：组帧+CRC；payload ≤480B（总帧 ≤489B < MTU≈496B；超长返回 -1，跨帧分块规则协议层预留）。
 - **验收**：对发 10 分钟无解析错；人为注错帧（坏 CRC）被丢弃且计数。
 
-### P3-08 双向心跳 ⬜
-- Core0 每 500ms 发 `0x7E`；监测 M4 心跳（RPMSG `0x7E` 或 CAN 0x210 转发）。
-- 超时 1s → `LINK_DOWN`（业务层可读状态）；恢复 → 清除。
+### P3-08 双向心跳 🟨
+- `rpmsg_link.c`：Core0 每 500ms 发 `0x7E`（1B 序号 0..255 循环）；任何有效帧（0x7E/0x21/0x23）刷新保鲜。
+- 超时（默认 1s）→ 关 fd 置 `LINK_DOWN`（`on_link` 回调 + `rpmsg_link_get_state` 可读）；恢复 → 自动清除。
 - **验收（KPI）**：remoteproc stop M4 → ≤1s 业务层感知。
 
-### P3-09 断链恢复与状态重同步 ⬜
-- 恢复动作：重开 tty/清缓冲 → 发 `0x13` 全量查询 → 按返回刷新状态表；
-- seq 补偿：跨断链窗口的旧 seq 全部丢弃，从新 seq 对齐。
+### P3-09 断链恢复与状态重同步 🟨
+- `rpmsg_link.c`：DOWN → 按 reopen_ms 周期重开 tty → `rpmsg_rx_reset` 清缓冲（旧 seq 全部作废）→ 发 `0x13` 全量查询 → 0x23 返回刷新快照（`rpmsg_link_get_m4_state`）。
 - **验收（KPI）**：断链期间丢的遮光事件不阻塞业务——恢复后靠全量状态帧补齐闸/到位状态。
 
-### P3-10 业务数据流对接 ⬜
-- 上行：`0x21` → 投递业务队列（第4步 P4-01 消费）；
-- 下行：业务调 `rpmsg_send_gate(cmd)` 封装开/关闸；
-- 线程模型：业务只碰队列不碰 fd。
+### P3-10 业务数据流对接 🟨
+- `rpmsg_link.h`：上行经 `on_frame` 回调投递（业务只消费回调/快照，不碰 fd）；下行 `rpmsg_link_send_gate_open/close`（0x11/0x12）、`rpmsg_link_send_query`（0x13）；回调在 RX 线程锁外派发，回调内可再调 send。
+- demo 中 0x21 已按 §1 CAN 语义解码打印（0x200 ev/lux/drop）。
 - **验收**：事件从 CAN 到业务队列全链路日志可查（与第4步联测）。
 
-### P3-11 打桩工具 `tools/rpmsg_cli` ⬜
-- hex 收发/注入/丢帧统计小 CLI。
+### P3-11 打桩工具 `core0_service/tools/rpmsg_cli` 🟨
+- hex 收发 / `bad`（故意坏 CRC）注入 / `stats` 统计小 CLI（复用 rpmsg_proto 拆帧）。
 - **验收**：用它独立验证 M4 行为（不依赖业务代码）。
 
 ## 4. 验收门 G3

@@ -2,7 +2,8 @@
 
 > 适用范围: 主站 + 从站 CAN 通信层  
 > 最后更新: 2026-08-04 (第十一次修改: W5500 自动恢复 — SPI 异常快探重初始化 + 1s SIPR 校验 + 恢复窗口缩短)  
-> 2026-09-06 修正: §7 文档引用 `oled_standard_SPI.md` → `oled_standard.md`（源文件已改名，余无改动）
+> 2026-09-06 修正: §7 文档引用 `oled_standard_SPI.md` → `oled_standard.md`（源文件已改名，余无改动）  
+> 2026-09-06 增补: §3.8「FreeRTOS 下 CAN ISR 铁律（ISR 最小化原则）」（同日修订：阻塞改"非必要不可阻塞"；明确 ISR 内禁用 take 类函数）
 
 ---
 
@@ -303,6 +304,20 @@ typedef struct {
     uint16_t reserved_ch1;
 } SlaveNode_t;
 ```
+
+---
+
+### 3.8 FreeRTOS 下 CAN ISR 铁律（ISR 最小化原则）
+
+> 加入时间：2026-09-06（措辞同日修订：非"绝对禁阻塞"，而是"非必要不可阻塞"）。凡 FreeRTOS + CAN 中断处理（主站 RX0/RX1/SCE、以及后续新增 ISR）都必须遵守：
+
+1. **ISR 内不做耗时操作**：避免在中断里做逐帧解析、查表统计、printf / OLED 刷屏 / 软件 I2C bit-bang 等耗时动作——中断停留越久，低优先级任务越易饿死，高速帧率下必丢帧（§6 问题 16 的教训）。
+2. **非必要不可阻塞（不是绝对禁止阻塞）**：ISR 里应避免一切**不必要**、可能阻塞的调用（HAL 阻塞接口、忙等/自旋、等待信号量/锁）；若确有必要（如对关键共享变量/寄存器做临界保护、时序必须同步），可做但必须**控制到最短**并评估对低优先级任务与丢帧的影响——必要时该阻塞/关中断就做，别无选择时不硬扛"禁止"。
+3. **⚠️ CAN ISR 内不能调用 FreeRTOS 的 take 类函数**：`xSemaphoreTake` / `osSemaphoreAcquire` / `osMutexAcquire` 等 take 语义可能阻塞，ISR 语境不可用。需要"获取资源/同步"时改用**事件位、队列/信号量的 FromISR 变体**（如 `xSemaphoreGiveFromISR`、`osSemaphoreRelease`），或本项目采用的**锁无关 SPSC ring**（§3.2）；绝对不能在 ISR 里裸调 take。
+4. **ISR 只做二选一，尽量只"通知任务"**：
+   - **搬数据**：把硬件帧拷进**无锁 SPSC 环形缓冲**后立刻返回，解析交给任务（本项目主站做法：`CAN_Receive → RxRingHigh_push`，由 `Task_CAN_Drain` 消费，见 3.2/3.1）；
+   - **通知任务**：置事件位 / 用 `...FromISR` 系列入队/释放唤醒任务（前提：该 ISR 优先级高于 FreeRTOS 临界区屏蔽阈值，能安全调用 FromISR API）。
+5. **本项目落点**：主站 RX0 中断优先级 8 ≥ `configMAX_SYSCALL(0x50)`，会被 FreeRTOS 临界区（BASEPRI）屏蔽，**连 FromISR API 都不安全**——因此采用"无锁 SPSC ring + 独立 drain 任务"实现与"只通知任务"等价的最小化 ISR；从站则干脆**零中断纯轮询**（见 §4），从根上避开 ISR 负担。
 
 ---
 
