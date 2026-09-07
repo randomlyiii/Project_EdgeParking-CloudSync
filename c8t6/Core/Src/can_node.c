@@ -139,10 +139,11 @@ void CAN_Node_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
 
-  /* ---- 调试: 采一次 CAN_ESR(REC/TEC/LEC/BOFF), 供 live watch ---- */
+  /* ---- 调试: 采一次 CAN_ESR(REC/TEC/LEC/BOFF), 供 live watch ----
+     F1 的 CAN_ESR 位段(RM0008): REC=[23:16] TEC=[15:8] LEC=[6:4] BOFF=[2] */
   g_can_node_dbg.can_esr_raw = hcan.Instance->ESR;
-  g_can_node_dbg.rec         = (g_can_node_dbg.can_esr_raw >> 24u) & 0xFFu;
-  g_can_node_dbg.tec         = (g_can_node_dbg.can_esr_raw >> 16u) & 0xFFu;
+  g_can_node_dbg.rec         = (g_can_node_dbg.can_esr_raw >> 16u) & 0xFFu;
+  g_can_node_dbg.tec         = (g_can_node_dbg.can_esr_raw >> 8u)  & 0xFFu;
   g_can_node_dbg.lec         = (g_can_node_dbg.can_esr_raw >> 4u)  & 0x7u;
   g_can_node_dbg.boff        = (g_can_node_dbg.can_esr_raw >> 2u)  & 0x1u;
 
@@ -163,11 +164,13 @@ void CAN_Node_Poll(void)
       drained++;
       g_can_node_dbg.rx_total++;   /* 只要进了 FIFO0 就计(无论是否解析) */
 
-      /* 帧校验已临时关闭(本工程不需要严格帧校验; 调试排障用可再放开):
-         TODO(收尾): 若恢复, 用
-           if ((rh.IDE != CAN_ID_STD) || (rh.StdId != CAN_CMD_ID) || (rh.DLC != 8u)) continue;
-         注: 去掉 StdId/DLC 校验后, 仍靠 CAN 硬件过滤器(0x1xx 掩码)拦非指令帧。
-         若有 DLC<8 帧进来, data 高位可能带邮箱残留, 本项目对端恒 DLC=8, 无影响。 */
+      /* 帧校验(正常模式, can.md 审计整改项): 只收标准帧 0x100 且 DLC=8,
+        其余丢弃——硬件掩码过滤器(0x1xx 段)之外的二次软件校验。
+        注: 联调期曾临时关闭放行异常帧, 收尾后恢复。 */
+      if ((rh.IDE != CAN_ID_STD) || (rh.StdId != CAN_CMD_ID) || (rh.DLC != 8u))
+      {
+        continue;
+      }
       switch (data[0])
       {
         case CAN_CMD_OPEN_GATE:

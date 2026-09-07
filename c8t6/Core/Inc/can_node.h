@@ -66,10 +66,10 @@ typedef struct {
   uint32_t ev_sent;       /* 0x200 事件发出数 */
   uint32_t gate_opens;    /* 收到 0x100/0x01 开闸指令的次数(Gate 行翻转来源) */
   uint32_t can_esr_raw;   /* CAN_ESR 寄存器原始值 */
-  uint32_t rec;           /* = (ESR>>24)&0xFF 接收误差计数 */
-  uint32_t tec;           /* = (ESR>>16)&0xFF 发送误差计数 */
-  uint32_t lec;           /* = (ESR>>4)&0x7   最近错误码 */
-  uint32_t boff;          /* 1=当前 BusOff */
+  uint32_t rec;           /* REC = (ESR>>16)&0xFF 接收误差计数(F1 位段, RM0008) */
+  uint32_t tec;           /* TEC = (ESR>>8)&0xFF  发送误差计数 */
+  uint32_t lec;           /* LEC = (ESR>>4)&0x7   最近错误码 */
+  uint32_t boff;          /* 1=当前 BusOff(ESR bit2) */
 } CAN_NodeDbg_t;
 extern volatile CAN_NodeDbg_t g_can_node_dbg;   /* 全局开放, 调试器/逻辑分析友好 */
 

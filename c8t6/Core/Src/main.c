@@ -26,7 +26,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ssd1306.h"
-#include "sw_i2c.h"
 #include "can_node.h"
 /* USER CODE END Includes */
 
@@ -48,12 +47,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-/* 诊断结果，defaultTask 用 PC13 LED 闪 N 下显示 g_DiagCode：
-   1=SCL拉不低 2=SCL松不开 3=SDA拉不低 4=SDA松不开 5=线正常但0x78无ACK 6=0x78有ACK
-   （原始结果另存 g_DiagLine/g_DiagProbe 供调试器查看） */
-volatile uint8_t g_DiagCode = 0;
-volatile uint8_t g_DiagLine = 2;
-volatile uint8_t g_DiagProbe = 2;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,33 +94,22 @@ int main(void)
   MX_CAN_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  /* 诊断：彻底关掉硬件 I2C1 外设并撤销 I2C1 重映射。
-     MspInit 此前把 PB8/PB9 配成 I2C1 复用+重映射，是本固件与 Keil
-     参考工程(纯 GPIO bit-bang)在引脚环境上的唯一差异 */
+  /* 关闭硬件 I2C1 外设并撤销其重映射：PB8/PB9 归软件 I2C(bit-bang)专用，
+     SSD1306/BH1750 的传输层全走软件 I2C(ssd1306.c 内部会把引脚 reclaim 为 GPIO OD)。 */
   __HAL_RCC_I2C1_CLK_DISABLE();
   __HAL_RCC_AFIO_CLK_ENABLE();
   __HAL_AFIO_REMAP_I2C1_DISABLE();
 
-  /* 诊断：总线自检(能否拉低/释放为高) + OLED 0x78 应答探测。
-     结果写入 g_DiagLine/g_DiagProbe，由 defaultTask 用 LED 编码显示 */
-  SW_I2C_Init();
-  g_DiagLine = SW_I2C_LineCheck();
-
-  /* 裸机点屏(调度器启动前，与 Keil 参考工程等价的路径)，兼作开机画面 */
+  /* 开机画面：调度器启动前裸机点屏(与 Keil 参考工程等价路径)。
+     标题行后续由 OLED_Task 按正常界面持续刷新(行1 HelloWorld)。 */
   SSD1306_Init();
   SSD1306_Fill(0x00);
   SSD1306_ShowString(1, 1, "HelloWorld");
   SSD1306_UpdateScreen();
 
-  g_DiagProbe = SW_I2C_Probe(0x78);   /* OLED 写地址 = 0x3C<<1 */
-
-  /* 汇总为 LED 闪烁次数编码 */
-  g_DiagCode = (g_DiagLine != 0) ? g_DiagLine
-                                 : ((g_DiagProbe == 0) ? 6u : 5u);
-
   /* CAN 2.0 从节点启动(调度器启动前)：过滤器(收 0x1xx 指令) + Start。
      此后收帧由 CAN_Rx_Task 每 10ms 轮询 FIFO0 完成(见 can_node.c / can.md)；
-     OLED 与 CAN 共用 PA11/PA12 不冲突，启动失败不阻塞开机(仅置错误位)。 */
+     启动失败不阻塞开机(仅置错误位，OLED 行4 显示 CAN:ERR)。 */
   CAN_Node_Init();
   /* USER CODE END 2 */
 

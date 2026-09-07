@@ -175,13 +175,8 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  /* 诊断结果 LED 编码(定义在 main.c，splash 阶段已测完)，循环闪 N 下+停顿:
-       1=SCL拉不低(引脚控制异常,固件层)      2=SCL松不开(线被拉死/无上拉)
-       3=SDA拉不低                            4=SDA松不开(同上)
-       5=线正常但 0x78 无ACK(模块没挂上/接线) 6=0x78 有ACK(模块在总线!)
-     闪烁本身同时证明内核与任务在运行 */
-  extern volatile uint8_t g_DiagCode;
-
+  /* PC13 心跳灯(1Hz)：证明内核与任务正常运行。
+     (联调期的诊断闪码三件套已随"正常模式"收尾拆除，见 git 历史) */
   GPIO_InitTypeDef led = {0};
   __HAL_RCC_GPIOC_CLK_ENABLE();
   led.Pin   = GPIO_PIN_13;
@@ -192,14 +187,8 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for (;;)
   {
-    for (uint8_t i = 0; i < g_DiagCode; i++)
-    {
-      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-      osDelay(60);
-      HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-      osDelay(260);
-    }
-    osDelay(1600);
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+    osDelay(500);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -241,8 +230,8 @@ void BH1750Task(void *argument)
   uint8_t  read_ok;
   osStatus_t res;
 
-  /* 初始化(阻塞约 200ms)：总线在 main 裸机段已由 SW_I2C_Init 建好；
-     传感器掉线/后插上由循环里的"连续失败重初始化"自愈 */
+  /* 初始化(阻塞约 200ms)：总线在 main 裸机段 splash 时已由 SSD1306_Init
+     (内部 SW_I2C_Init)建好；传感器掉线/后插上由循环里的"连续失败重初始化"自愈 */
   osMutexAcquire(OledMutexHandle, osWaitForever);
   if (BH1750_Init() != HAL_OK)
   {
@@ -338,15 +327,33 @@ void OLEDTask(void *argument)
       lux = rx;
     }
 
-    /* CAN 调试显示: 直接把 CAN 链路关键计数打上屏(不依赖调试器符号) */
+    /* 正常模式界面(4 行 x 16 列, 8x16 字体; 行号宏在 config.h):
+       行1 标题 | 行2 Lux+drop% | 行3 Gate 道闸 | 行4 CAN 链路状态 */
     {
+      uint32_t now = osKernelGetTickCount();
+      uint8_t ev_flash = (uint32_t)(now - CAN_Node_LastEventTick()) < OLED_EVT_FLASH_MS;
+      const char *can_st;
+
+      if (ev_flash)
+      {
+        can_st = "CAN:EVT ";        /* 刚收到/发出过遮光事件, 闪烁 OLED_EVT_FLASH_MS */
+      }
+      else if (CAN_Node_TxError())
+      {
+        can_st = "CAN:ERR ";        /* 最近一次发送失败(邮箱满/无 ACK) */
+      }
+      else
+      {
+        can_st = "CAN:OK  ";
+      }
+
       osMutexAcquire(OledMutexHandle, osWaitForever);
       SSD1306_Fill(0x00);
 
-      /* 行1: 标题(当前为 CAN 调试模式) */
-      SSD1306_ShowString(OLED_LINE_TITLE, 1, "CAN DBG  ");
+      /* 行1: 标题 */
+      SSD1306_ShowString(OLED_LINE_TITLE, 1, "HelloWorld");
 
-      /* 行2: 光照 + 掉点(BH1750; 故障 Lux:ERR) */
+      /* 行2: 光照 + 掉点(BH1750; 故障显示 Lux:ERR) */
       if (lux == BH1750_ERR_VALUE)
       {
         snprintf(line, sizeof(line), "Lux:ERR  D:--");
@@ -358,17 +365,12 @@ void OLEDTask(void *argument)
       }
       SSD1306_ShowString(OLED_LINE_LUX, 1, line);
 
-      /* 行3: R=REC(接收误差计数) T=TEC(发送误差计数); 任一 >0 即有错误 */
-      snprintf(line, sizeof(line), "R:%lu T:%lu",
-               (unsigned long)g_can_node_dbg.rec,
-               (unsigned long)g_can_node_dbg.tec);
+      /* 行3: 道闸状态(收到 0x100 开闸指令后翻转) */
+      snprintf(line, sizeof(line), "Gate:%s", CAN_Node_GateOpen() ? "OPEN" : "CLOSE");
       SSD1306_ShowString(OLED_LINE_GATE, 1, line);
 
-      /* 行4: RX=收进FIFO0总帧数  G=收到0x100/0x01开闸指令数(>0 即已收到开闸) */
-      snprintf(line, sizeof(line), "RX:%lu G:%lu",
-               (unsigned long)g_can_node_dbg.rx_total,
-               (unsigned long)g_can_node_dbg.gate_opens);
-      SSD1306_ShowString(OLED_LINE_CAN, 1, line);
+      /* 行4: CAN 链路 */
+      SSD1306_ShowString(OLED_LINE_CAN, 1, can_st);
 
       SSD1306_UpdateScreen();
       osMutexRelease(OledMutexHandle);
