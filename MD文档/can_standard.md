@@ -4,6 +4,7 @@
 > 最后更新: 2026-08-04 (第十一次修改: W5500 自动恢复 — SPI 异常快探重初始化 + 1s SIPR 校验 + 恢复窗口缩短)  
 > 2026-09-06 修正: §7 文档引用 `oled_standard_SPI.md` → `oled_standard.md`（源文件已改名，余无改动）  
 > 2026-09-06 增补: §3.8「FreeRTOS 下 CAN ISR 铁律（ISR 最小化原则）」（同日修订：阻塞改"非必要不可阻塞"；明确 ISR 内禁用 take 类函数）
+> 2026-09-08 增补: §7 停车场 Demo 落地记录（C8T6 从站 ↔ STM32MP157 M4 主站，真机联调已通）——FDCAN 双环境时钟 / A7↔M4 独占移交 / 单发不重传两端语义符号差异 / F1 CAN_ESR 位段勘误 / 收尾模板（原 §7 相关文档顺延为 §8）
 
 ---
 
@@ -497,7 +498,41 @@ void W5500_TCPServer_Run(void) {
 
 ---
 
-## 7. 相关文档
+## 7. 停车场 Demo 落地记录（C8T6 从站 ↔ MP157 M4 主站，2026-09-08 真机联调通过）
+
+> 本记录把规范在「端侧AI·边云协同停车场」项目（C8T6 从站 + STM32MP157 M4 主站）的
+> 应用差异与经验留档，供后续复用；帧级协议以 `docs/protocols.md` §1 为唯一权威。
+
+- **物理层**：同 §1 大框架——经典 CAN 2.0 / 500k / 标准帧 / 总线两端各 120Ω / 共地。
+  主站 = **STM32MP157 M4 FDCAN2**（PB5=RX / PB6=TX，AF9，板载 TJA1042；Linux 节点
+  m_can2 / can@4400f000）；从站 = C8T6 bxCAN1（PA11/PA12，TJA1050）。
+- **采样点**：从站 75%（36MHz/9/(1+5+2)）；主站由实测时钟自动换算 500k（见下条）。
+  主从两端真机**双向全通**：0x100 开闸/关闸/查询、0x200 遮光事件、0x210 心跳 1Hz、
+  3s 无心跳离线判定。
+- **⚠️ MP157 FDCAN 时钟双环境（本次最大坑，务必留档）**：同一块板，M4 的 FDCAN 内核
+  时钟随运行环境不同——① 工程模式（CubeIDE 调试/独立启动）= **PLL3Q 100MHz**（.ioc
+  RCC 段 + 工程 SystemClock_Config）；② Linux(A7) 引导/remoteproc = **62.5MHz**（实测）。
+  因此主端位时序**不可静态写死**：按运行期实测时钟换算（`HAL_RCCEx_GetPeriphCLKFreq`
+  → 自动算 500k 的 Prescaler/Seg，见 `m4_fw` fdcan.c `FDCAN2_AutotuneBitTiming`；
+  静态默认 = 工程模式 100MHz 的 25/(1+5+2)=75% 作兜底）。教训：曾按 Linux 实测
+  62.5MHz 静态改 M4 时序，工程模式下波特率变 800k，完全不通。
+- **A7 ↔ M4 独占移交**：Linux can0 = m_can2 = FDCAN2，m_can 驱动绑定期间 M4 不能同用
+  该控制器（寄存器与 RCC 时钟门都在 Linux 手中）。移交 M4 = `ip link set can0 down`
+  后 `echo 4400f000.can > /sys/bus/platform/drivers/m_can_platform/unbind`；A7 要收回
+  can0 需手动 rebind（同一路径写 bind）或重启。
+- **单发不重传（两端一致，但 HAL 语义符号相反）**：C8T6(F1) `NART=ENABLE` = 禁止自动
+  重传；MP1 HAL `AutoRetransmission=DISABLE` = 禁止自动重传。两端都配成"单发不重传"，
+  实现 §4.2「单节点故障不拖累全网」精神；对照时勿被相反拼写误导。
+- **F1 CAN_ESR 位段勘误（2026-09-08）**：REC=[23:16]、TEC=[15:8]、LEC=[6:4]、
+  BOFF=[2]。曾误用 `>>24/>>16` 读 REC/TEC → REC 恒 0 假象（联调 OLED 上 "r=0" 误导
+  排查方向）。`c8t6` can_node.c `g_can_node_dbg` 已按正确位段实现。
+- **收尾模板（诊断 → 正常模式）**：联调期使用的"三件套"（OLED CAN DBG 计数页、
+  PC13 闪码诊断、裸机 LineCheck/Probe 探测）在联调通过后已全部拆除：OLED 回到正式
+  四行界面（行1 HelloWorld / 行2 Lux+drop / 行3 Gate / 行4 CAN:OK|EVT|ERR），
+  defaultTask 改 1Hz 心跳灯，帧软件二次校验（仅 0x100 标准帧 DLC=8）恢复正常。
+  三件套代码在 git 历史中可回溯复用。
+
+## 8. 相关文档
 
 - `engineReuse_standard.md` — 从站复用架构 + 传感器抽象层
 - `freertos_standard_SPL.md` — FreeRTOS 内核规范（中断优先级/栈/IWDG）
