@@ -26,8 +26,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "i2c.h"
+#include "config.h"      /* 遮光/CAN/SG90/OLED 全局常量(现场调参只改这里) */
 #include "bh1750.h"
 #include "ssd1306.h"
+#include "shade.h"
+#include "can_node.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -49,18 +52,17 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-/* OLED 显示布局(8x16 字体, 4 行 x 16 列, 行/列均从 1 起):
- *   行1: 标题/状态   行2: Lux 光照   行3: Gate 道闸   行4: CAN 链路(预留)
+/* OLED 显示布局(8x16 字体, 4 行 x 16 列, 行/列均从 1 起; 行号宏在 config.h):
+ *   行1: 标题       行2: Lux+drop%     行3: Gate 道闸     行4: CAN 链路
  * Show* 只写影子显存，改完调 SSD1306_UpdateScreen() 上屏；
- * 所有对 OLED 的访问先拿 OledMutex，后续任务(如 SG90/CAN)要刷屏直接复用。
- */
+ * 所有对 OLED 的访问先拿 OledMutex，后续任务(如 CAN)要刷屏直接复用。 */
+/* 软件 I2C 总线互斥(PB8/PB9)：OLED 与 BH1750 两个任务都 bit-bang 同一条
+ * 总线，事务级串行化——谁持锁谁独占总线，持锁期间可连续多条 Start/Stop。 */
 osMutexId_t OledMutexHandle;
 
-/* OLED 各显示行号(8x16 字体) */
-#define OLED_LINE_TITLE   1u
-#define OLED_LINE_LUX     2u
-#define OLED_LINE_GATE    3u
-#define OLED_LINE_CAN     4u
+/* CAN 发送互斥：BH1750_Task(事件 0x200) 与 CAN_Rx_Task(心跳 0x210/查询应答)
+ * 并发调用 HAL_CAN_AddTxMessage，用本锁串行化邮箱选取(can_node.c 使用)。 */
+osMutexId_t CanTxMutexHandle;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -87,7 +89,8 @@ const osThreadAttr_t BH1750_Task_attributes = {
 osThreadId_t OLED_TaskHandle;
 const osThreadAttr_t OLED_Task_attributes = {
   .name = "OLED_Task",
-  .stack_size = 256 * 4,
+  .stack_size = 384 * 4,   /* oled_standard.md 6.3: sprintf+I2C 刷屏任务实测 >=384 words
+                              (与 c8t6.ioc 的 OLED_Task 栈值同步改，regen 后需确认保留) */
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for BhDataQueue */
@@ -120,6 +123,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_MUTEX */
   OledMutexHandle = osMutexNew(NULL);
+  CanTxMutexHandle = osMutexNew(NULL);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -210,10 +214,14 @@ void StartDefaultTask(void *argument)
 void CANRxTask(void *argument)
 {
   /* USER CODE BEGIN CANRxTask */
+  /* CAN 已在 main 裸机段 Init(过滤器+Start, can_node.c)。
+     本任务每 10ms 轮询 FIFO0 收 0x100 指令/查询并顺带驱动 1Hz 心跳(0x210)；
+     零中断轮询的理由见 can.md §软件架构(从站帧率低, 轮询足够)。 */
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    CAN_Node_Poll();
+    osDelay(CAN_POLL_PERIOD_MS);
   }
   /* USER CODE END CANRxTask */
 }
@@ -228,29 +236,65 @@ void CANRxTask(void *argument)
 void BH1750Task(void *argument)
 {
   /* USER CODE BEGIN BH1750Task */
-  /* 临时：OLED 点屏测试阶段挂起本任务，避免与 OLED 并发占用 I2C1。
-     OLED 验证通过后恢复下面的读取逻辑。 */
-  osThreadSuspend(NULL);
-
   uint16_t lux = BH1750_ERR_VALUE;
+  uint8_t  fail_streak = 0;
+  uint8_t  read_ok;
   osStatus_t res;
 
-  /* 连续 H 分辨率模式：一次配置后传感器自动循环测量(约180ms/次) */
+  /* 初始化(阻塞约 200ms)：总线在 main 裸机段已由 SW_I2C_Init 建好；
+     传感器掉线/后插上由循环里的"连续失败重初始化"自愈 */
+  osMutexAcquire(OledMutexHandle, osWaitForever);
   if (BH1750_Init() != HAL_OK)
   {
-    /* 传感器不在总线/初始化失败，上报哨兵值让 OLED 显示 ERR */
     lux = BH1750_ERR_VALUE;
     osMessageQueuePut(BhDataQueueHandle, &lux, 0, osWaitForever);
   }
+  osMutexRelease(OledMutexHandle);
 
   /* Infinite loop */
   for (;;)
   {
-    osDelay(200);
+    osDelay(BH1750_READ_PERIOD_MS);
 
-    if (BH1750_ReadLux(&lux) != HAL_OK)
+    /* 持总线锁读数(与 OLED 刷屏互斥) */
+    osMutexAcquire(OledMutexHandle, osWaitForever);
+    read_ok = (BH1750_ReadLux(&lux) == HAL_OK);
+    if (!read_ok)
     {
       lux = BH1750_ERR_VALUE;
+      /* 连续失败约 5s：传感器可能刚上电/后插上，重发初始化序列 */
+      if (++fail_streak >= BH1750_REINIT_FAILS)
+      {
+        fail_streak = 0;
+        (void)BH1750_Init();
+      }
+    }
+    else
+    {
+      fail_streak = 0;
+    }
+    osMutexRelease(OledMutexHandle);
+
+    /* 遮光状态机 + CAN 上报(不需 I2C 总线，锁已释放):
+       - 读失败: 只上报故障标志(状态位 bit2), 不喂状态机(防污染基线);
+       - 读成功: 每周期喂 lux, 状态翻转边沿发 0x200 事件(1=遮光/车到位, -1=恢复)。 */
+    if (read_ok)
+    {
+      int8_t edge;
+      Shade_ReportFault(0u);
+      edge = Shade_FSM_Update(lux);
+      if (edge == 1)
+      {
+        (void)CAN_Node_SendEvent(CAN_EVT_SHADED, lux, Shade_GetDrop());
+      }
+      else if (edge == -1)
+      {
+        (void)CAN_Node_SendEvent(CAN_EVT_RECOVER, lux, Shade_GetDrop());
+      }
+    }
+    else
+    {
+      Shade_ReportFault(1u);
     }
 
     /* 队列只留最新值：满了就先丢掉最旧的一条再放 */
@@ -275,24 +319,74 @@ void BH1750Task(void *argument)
 void OLEDTask(void *argument)
 {
   /* USER CODE BEGIN OLEDTask */
-  /* 当前阶段只有 OLED：循环里每秒重写 HelloWorld
-     (8x16 大字体，第 1 行第 1 列，与 Keil 参考工程同款位置/字体) */
-  if (SSD1306_Init() != HAL_OK)
-  {
-    /* OLED 不在总线：本节点失去显示能力，任务自挂起，不拖累其它任务 */
-    osThreadSuspend(NULL);
-  }
+  uint16_t lux = BH1750_ERR_VALUE;
+  uint16_t rx;
+  char line[17];   /* 16 字符 + '\0'（oled_standard.md 6.2：严禁越 16 列） */
+
+  /* 屏已在 main 裸机段点亮(splash)，此处重初始化一次保证状态干净；
+     同样要拿总线锁——BH1750Task 可能正在初始化/读数 */
+  osMutexAcquire(OledMutexHandle, osWaitForever);
+  (void)SSD1306_Init();
+  osMutexRelease(OledMutexHandle);
 
   /* Infinite loop */
   for (;;)
   {
-    osMutexAcquire(OledMutexHandle, osWaitForever);
-    SSD1306_Fill(0x00);
-    SSD1306_ShowString(OLED_LINE_TITLE, 1, "HelloWorld");
-    SSD1306_UpdateScreen();
-    osMutexRelease(OledMutexHandle);
+    /* 抽干队列取最新光照值(含 0xFFFF=传感器故障哨兵) */
+    while (osMessageQueueGet(BhDataQueueHandle, &rx, NULL, 0) == osOK)
+    {
+      lux = rx;
+    }
 
-    osDelay(1000);
+    /* CAN 事件闪烁计时: 距最近一次成功发 0x200 的时长(ms) */
+    {
+      uint32_t now    = osKernelGetTickCount();
+      uint32_t evTick = CAN_Node_LastEventTick();
+      uint32_t evAge  = (now >= evTick) ? (now - evTick) : 0u;
+
+      osMutexAcquire(OledMutexHandle, osWaitForever);
+      SSD1306_Fill(0x00);
+
+      /* 行1: 标题 */
+      SSD1306_ShowString(OLED_LINE_TITLE, 1, "PARK NODE");
+
+      /* 行2: 光照 + 掉点(遮光检测调参看这里; 故障时 Lux:ERR) */
+      if (lux == BH1750_ERR_VALUE)
+      {
+        snprintf(line, sizeof(line), "Lux:ERR  D:--");
+      }
+      else
+      {
+        snprintf(line, sizeof(line), "Lux:%u D:%u%%",
+                 (unsigned int)lux, (unsigned int)Shade_GetDrop());
+      }
+      SSD1306_ShowString(OLED_LINE_LUX, 1, line);
+
+      /* 行3: 道闸(跟随 0x100 指令; SG90 阶段接 PWM 后同源) */
+      snprintf(line, sizeof(line), "Gate:%s",
+               CAN_Node_GateOpen() ? "OPEN" : "CLOSE");
+      SSD1306_ShowString(OLED_LINE_GATE, 1, line);
+
+      /* 行4: CAN 链路(事件后闪 EVT 一秒; 发送异常常显 ERR) */
+      if (CAN_Node_TxError())
+      {
+        snprintf(line, sizeof(line), "CAN:ERR");
+      }
+      else if (evAge < OLED_EVT_FLASH_MS)
+      {
+        snprintf(line, sizeof(line), "CAN:EVT");
+      }
+      else
+      {
+        snprintf(line, sizeof(line), "CAN:OK");
+      }
+      SSD1306_ShowString(OLED_LINE_CAN, 1, line);
+
+      SSD1306_UpdateScreen();
+      osMutexRelease(OledMutexHandle);
+    }
+
+    osDelay(OLED_REFRESH_MS);
   }
   /* USER CODE END OLEDTask */
 }

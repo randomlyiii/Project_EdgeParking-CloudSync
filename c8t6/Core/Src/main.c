@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "ssd1306.h"
 #include "sw_i2c.h"
+#include "can_node.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -122,6 +123,11 @@ int main(void)
   /* 汇总为 LED 闪烁次数编码 */
   g_DiagCode = (g_DiagLine != 0) ? g_DiagLine
                                  : ((g_DiagProbe == 0) ? 6u : 5u);
+
+  /* CAN 2.0 从节点启动(调度器启动前)：过滤器(收 0x1xx 指令) + Start。
+     此后收帧由 CAN_Rx_Task 每 10ms 轮询 FIFO0 完成(见 can_node.c / can.md)；
+     OLED 与 CAN 共用 PA11/PA12 不冲突，启动失败不阻塞开机(仅置错误位)。 */
+  CAN_Node_Init();
   /* USER CODE END 2 */
 
   /* Init scheduler */

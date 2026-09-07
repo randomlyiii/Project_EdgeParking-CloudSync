@@ -21,7 +21,10 @@
 #include "can.h"
 
 /* USER CODE BEGIN 0 */
-
+/* ⚠️ CubeMX 再生成后请核对: c8t6.ioc 的 CAN.NART=ENABLE
+ * (对应 hcan.Init.AutoRetransmission = DISABLE, 单发不自动重传:
+ *  无 ACK 时硬件放弃一次, 不占邮箱, 防"主端离线时本端反复重传→BusOff"风暴。
+ *  权衡说明见 c8t6/can.md §NART/ABOM)。若在 CubeMX 误看到 ENABLE, 请保持本值。 */
 /* USER CODE END 0 */
 
 CAN_HandleTypeDef hcan;
@@ -46,7 +49,7 @@ void MX_CAN_Init(void)
   hcan.Init.TimeTriggeredMode = DISABLE;
   hcan.Init.AutoBusOff = ENABLE;
   hcan.Init.AutoWakeUp = DISABLE;
-  hcan.Init.AutoRetransmission = ENABLE;
+  hcan.Init.AutoRetransmission = DISABLE;   /* NART=ENABLE: 单发不自动重传(见文件头 USER CODE 0 注) */
   hcan.Init.ReceiveFifoLocked = DISABLE;
   hcan.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
