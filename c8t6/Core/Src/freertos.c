@@ -338,19 +338,15 @@ void OLEDTask(void *argument)
       lux = rx;
     }
 
-    /* CAN 事件闪烁计时: 距最近一次成功发 0x200 的时长(ms) */
+    /* CAN 调试显示: 直接把 CAN 链路关键计数打上屏(不依赖调试器符号) */
     {
-      uint32_t now    = osKernelGetTickCount();
-      uint32_t evTick = CAN_Node_LastEventTick();
-      uint32_t evAge  = (now >= evTick) ? (now - evTick) : 0u;
-
       osMutexAcquire(OledMutexHandle, osWaitForever);
       SSD1306_Fill(0x00);
 
-      /* 行1: 标题 */
-      SSD1306_ShowString(OLED_LINE_TITLE, 1, "PARK NODE");
+      /* 行1: 标题(当前为 CAN 调试模式) */
+      SSD1306_ShowString(OLED_LINE_TITLE, 1, "CAN DBG  ");
 
-      /* 行2: 光照 + 掉点(遮光检测调参看这里; 故障时 Lux:ERR) */
+      /* 行2: 光照 + 掉点(BH1750; 故障 Lux:ERR) */
       if (lux == BH1750_ERR_VALUE)
       {
         snprintf(line, sizeof(line), "Lux:ERR  D:--");
@@ -362,24 +358,16 @@ void OLEDTask(void *argument)
       }
       SSD1306_ShowString(OLED_LINE_LUX, 1, line);
 
-      /* 行3: 道闸(跟随 0x100 指令; SG90 阶段接 PWM 后同源) */
-      snprintf(line, sizeof(line), "Gate:%s",
-               CAN_Node_GateOpen() ? "OPEN" : "CLOSE");
+      /* 行3: R=REC(接收误差计数) T=TEC(发送误差计数); 任一 >0 即有错误 */
+      snprintf(line, sizeof(line), "R:%lu T:%lu",
+               (unsigned long)g_can_node_dbg.rec,
+               (unsigned long)g_can_node_dbg.tec);
       SSD1306_ShowString(OLED_LINE_GATE, 1, line);
 
-      /* 行4: CAN 链路(事件后闪 EVT 一秒; 发送异常常显 ERR) */
-      if (CAN_Node_TxError())
-      {
-        snprintf(line, sizeof(line), "CAN:ERR");
-      }
-      else if (evAge < OLED_EVT_FLASH_MS)
-      {
-        snprintf(line, sizeof(line), "CAN:EVT");
-      }
-      else
-      {
-        snprintf(line, sizeof(line), "CAN:OK");
-      }
+      /* 行4: RX=收进FIFO0总帧数  G=收到0x100/0x01开闸指令数(>0 即已收到开闸) */
+      snprintf(line, sizeof(line), "RX:%lu G:%lu",
+               (unsigned long)g_can_node_dbg.rx_total,
+               (unsigned long)g_can_node_dbg.gate_opens);
       SSD1306_ShowString(OLED_LINE_CAN, 1, line);
 
       SSD1306_UpdateScreen();

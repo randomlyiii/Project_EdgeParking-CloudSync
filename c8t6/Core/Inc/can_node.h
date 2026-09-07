@@ -57,6 +57,22 @@ uint8_t  CAN_Node_TxError(void);           /* 1=最近一次发送失败(状态�
 uint32_t CAN_Node_LastEventTick(void);     /* 最近一次成功发 0x200 的 tick(ms)，0=从未 */
 uint8_t  CAN_Node_StatusBits(void);        /* 汇总 0x200 d[4]/0x210 d[0] 状态字节 */
 
+/* ---------- 调试监视(供调试器 live watch；类同 M4 g_can_master_mon) ----------
+   用于排障：判断"帧到底有没有到、C8T6 能否解码"。CAN_ESR 位定义见 stm32f103xb.h。 */
+typedef struct {
+  uint32_t rx_total;      /* 收进 FIFO0 的总帧数(无论校验) */
+  uint32_t tx_total;      /* 本端成功发出的总帧数(事件+心跳+应答) */
+  uint32_t hb_sent;       /* 0x210 心跳发出数 */
+  uint32_t ev_sent;       /* 0x200 事件发出数 */
+  uint32_t gate_opens;    /* 收到 0x100/0x01 开闸指令的次数(Gate 行翻转来源) */
+  uint32_t can_esr_raw;   /* CAN_ESR 寄存器原始值 */
+  uint32_t rec;           /* = (ESR>>24)&0xFF 接收误差计数 */
+  uint32_t tec;           /* = (ESR>>16)&0xFF 发送误差计数 */
+  uint32_t lec;           /* = (ESR>>4)&0x7   最近错误码 */
+  uint32_t boff;          /* 1=当前 BusOff */
+} CAN_NodeDbg_t;
+extern volatile CAN_NodeDbg_t g_can_node_dbg;   /* 全局开放, 调试器/逻辑分析友好 */
+
 #ifdef __cplusplus
 }
 #endif

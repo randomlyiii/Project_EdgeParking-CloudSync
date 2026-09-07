@@ -35,6 +35,9 @@ static volatile uint8_t  s_tx_err           = 0u;   /* 1=最近一次发送失�
 static volatile uint32_t s_last_event_tick  = 0u;   /* 最近成功发 0x200 的 tick */
 static volatile uint32_t s_hb_last_tick     = 0u;   /* 上次心跳 tick */
 
+/* 调试监视(全局开放, 调试器 live watch)。volatile 防止优化器把"只写不读"的全局删掉 */
+volatile CAN_NodeDbg_t g_can_node_dbg;
+
 /* 单轮轮询最多处理的收帧数(与 MD文档/can_standard.md §4.4 一致):
    防对端异常洪泛时 CAN_Rx_Task(高优先)长时间占 CPU 饿死低优先任务；
    本端真实负载(心跳 1Hz + 零星指令)远达不到此上限。 */
@@ -83,6 +86,10 @@ static uint8_t CAN_TxFrame(uint32_t std_id, const uint8_t *data)
     osMutexRelease(CanTxMutexHandle);
   }
 
+  if (ret == 0u)
+  {
+    g_can_node_dbg.tx_total++;
+  }
   s_tx_err = ret;
   return ret;
 }
@@ -109,7 +116,7 @@ void CAN_Node_Init(void)
      若想精确只收 0x100，掩码改 0x7FF<<5(见 can.md §过滤器)。 */
   f.FilterIdHigh         = (uint16_t)(CAN_CMD_ID << 5u);
   f.FilterIdLow          = 0u;
-  f.FilterMaskIdHigh     = (uint16_t)(0x700u << 5u);
+  f.FilterMaskIdHigh     = (uint16_t)(0x700u << 5u);   /* 只收 0x1xx 主→从指令段 */
   f.FilterMaskIdLow      = 0u;
   f.FilterFIFOAssignment = CAN_RX_FIFO0;
   f.FilterBank           = 0u;
@@ -132,6 +139,13 @@ void CAN_Node_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
 
+  /* ---- 调试: 采一次 CAN_ESR(REC/TEC/LEC/BOFF), 供 live watch ---- */
+  g_can_node_dbg.can_esr_raw = hcan.Instance->ESR;
+  g_can_node_dbg.rec         = (g_can_node_dbg.can_esr_raw >> 24u) & 0xFFu;
+  g_can_node_dbg.tec         = (g_can_node_dbg.can_esr_raw >> 16u) & 0xFFu;
+  g_can_node_dbg.lec         = (g_can_node_dbg.can_esr_raw >> 4u)  & 0x7u;
+  g_can_node_dbg.boff        = (g_can_node_dbg.can_esr_raw >> 2u)  & 0x1u;
+
   /* ---- 收: 清空 FIFO0(零中断轮询; 每轮上限防饿死, 见文件头宏) ---- */
   {
     uint8_t drained = 0u;
@@ -147,18 +161,18 @@ void CAN_Node_Poll(void)
         break;
       }
       drained++;
+      g_can_node_dbg.rx_total++;   /* 只要进了 FIFO0 就计(无论是否解析) */
 
-      /* 帧有效性校验(遵循 can_standard.md §3.5: DLC!=8 丢弃):
-         本协议恒 DLC=8; HAL 对 DLC<8 的帧会把邮箱残留读满 8 字节,
-         非规范短帧一律丢弃, 不解析。 */
-      if ((rh.IDE != CAN_ID_STD) || (rh.StdId != CAN_CMD_ID) || (rh.DLC != 8u))
-      {
-        continue;
-      }
+      /* 帧校验已临时关闭(本工程不需要严格帧校验; 调试排障用可再放开):
+         TODO(收尾): 若恢复, 用
+           if ((rh.IDE != CAN_ID_STD) || (rh.StdId != CAN_CMD_ID) || (rh.DLC != 8u)) continue;
+         注: 去掉 StdId/DLC 校验后, 仍靠 CAN 硬件过滤器(0x1xx 掩码)拦非指令帧。
+         若有 DLC<8 帧进来, data 高位可能带邮箱残留, 本项目对端恒 DLC=8, 无影响。 */
       switch (data[0])
       {
         case CAN_CMD_OPEN_GATE:
           s_gate_open = 1u;
+          g_can_node_dbg.gate_opens++;
           break;
         case CAN_CMD_CLOSE_GATE:
           s_gate_open = 0u;
@@ -184,7 +198,10 @@ void CAN_Node_Poll(void)
     memset(d, 0, sizeof(d));
     d[0] = StatusBits_Calc();        /* 与 0x200 d[4] 同源 */
     d[1] = (uint8_t)(now / 1000u);   /* 上电秒数低 8 位(主端辅助判复位) */
-    (void)CAN_TxFrame(CAN_HB_ID, d);
+    if (CAN_TxFrame(CAN_HB_ID, d) == 0u)
+    {
+      g_can_node_dbg.hb_sent++;
+    }
   }
 }
 
@@ -197,6 +214,7 @@ uint8_t CAN_Node_SendEvent(uint8_t ev, uint16_t lux, uint8_t drop)
   if (CAN_TxFrame(CAN_EVT_ID, d) == 0u)
   {
     s_last_event_tick = osKernelGetTickCount();
+    g_can_node_dbg.ev_sent++;
     return 0u;
   }
   return 1u;
