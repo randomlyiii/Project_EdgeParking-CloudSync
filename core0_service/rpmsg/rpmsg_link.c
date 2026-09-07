@@ -208,15 +208,23 @@ rpmsg_link_t *rpmsg_link_create(const rpmsg_link_cfg_t *cfg)
 static void *rx_thread_main(void *arg)
 {
     rpmsg_link_t *lk = (rpmsg_link_t *)arg;
+    uint64_t next_open_try = 0u;   /* 重开节流时间点 */
 
     while (lk->running) {
         /* ---- 确保设备打开 ---- */
         if (lk->fd < 0) {
-            int fd = open(lk->cfg.device, O_RDWR | O_NOCTTY | O_NONBLOCK);
+            uint64_t now0 = now_ms();
+            int fd;
+
+            if (now0 < next_open_try) {
+                sleep_ms(20u);   /* DOWN 后按 reopen_ms 节流，避免设备静默时高频空转 */
+                continue;
+            }
+            fd = open(lk->cfg.device, O_RDWR | O_NOCTTY | O_NONBLOCK);
+            next_open_try = now_ms() + lk->cfg.reopen_ms;
 
             if (fd < 0) {
                 /* 设备不存在（remoteproc 未加载/已停）：按 reopen_ms 节奏重试，不崩溃 */
-                sleep_ms(lk->cfg.reopen_ms);
                 continue;
             }
             cfg_raw(fd);

@@ -24,7 +24,8 @@
 ## 板端编译与运行
 
 ```sh
-# 0) 先加载 M4（.elf 已放 /lib/firmware）
+# 0) 先加载 M4（.elf 已放 /lib/firmware）；首次使用先加执行位
+chmod +x tools/load_m4.sh tools/rpmsg_cli/rpmsg_cli 2>/dev/null || true
 sudo ./tools/load_m4.sh start          # 停旧→start→等到 /dev/ttyRPMSG0
 
 # 1) 编译（板端原生 gcc，或 ST SDK 交叉）

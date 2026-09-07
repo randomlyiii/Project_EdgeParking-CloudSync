@@ -63,6 +63,8 @@
 
 ## 3. RPMSG（M4 ↔ Core0）—— 已实现（Linux 侧代码落地，2026-09-07 拷入；M4 侧实现中）
 
+> 注：本文件 §3 对应母本 `PhaseMd/10` 的 §2（两文档章节号不同，以内容名为准）。
+
 - 通道：`/dev/ttyRPMSG0`，raw 模式；M4 侧 OpenAMP endpoint；ttyRPMSG0 归 Core0 独占。
 - 帧 = §0 通用格式；**单帧 payload ≤480B**（总帧 ≤489B < MTU≈496B；本表无超长消息，跨帧分块规则预留，0x14 TLV 落地时再定块头）。
 - 下行（Core0→M4）type：

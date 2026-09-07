@@ -8,6 +8,8 @@
  *   P3-10 业务对接：只通过回调拿帧（业务不碰 fd）；线程安全发送 API
  *
  * 线程模型：单 RX 线程 poll(fd)；写侧带锁，可被任意业务线程调用。
+ * 注意：on_frame/on_link 在 RX 线程内回调，回调中勿调用 rpmsg_link_stop/free
+ *      （会 join 自身导致死锁）；停止请从业务线程调用。
  */
 #ifndef RPMSG_LINK_H
 #define RPMSG_LINK_H
