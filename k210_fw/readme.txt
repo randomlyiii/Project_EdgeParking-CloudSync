@@ -1,0 +1,1 @@
+LCD_PREVIEW = False：屏幕无本地显示

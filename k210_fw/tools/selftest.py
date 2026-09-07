@@ -36,8 +36,8 @@ def test_roundtrip():
     got = []
     i, step = 0, 1
     while i < len(stream):
-        p2.feed(stream[i:i + step])
-        got += p2.feed(b"")
+        got += p2.feed(stream[i:i + step])   # 帧可能在本次喂入时就解析完成
+        got += p2.feed(b"")                  # 喂空串只为冲出缓冲残余
         i += step
         step = (step % 7) + 1
     assert got == frames, "拆帧结果与组帧不一致"
