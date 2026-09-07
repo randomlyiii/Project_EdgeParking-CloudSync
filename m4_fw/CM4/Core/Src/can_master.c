@@ -2,11 +2,11 @@
 /**
   ******************************************************************************
   * @file    can_master.c
-  * @brief   MP157 M4 CAN 主端(网关)模块实现(FDCAN1, 经典 CAN 2.0, 500k)
+  * @brief   MP157 M4 CAN 主端(网关)模块实现(FDCAN2, 经典 CAN 2.0, 500k)
   *
-  *          - 收: 零中断轮询 CANRxTask 每 10ms 清 FDCAN1 RX FIFO0(与 C8T6 从端同风格,
+  *          - 收: 零中断轮询 CANRxTask 每 10ms 清 FDCAN2 RX FIFO0(与 C8T6 从端同风格,
   *            本链路帧率为 1Hz 心跳 + 零星事件, 轮询足够; 若将来要中断/FromISR,
-  *            FDCAN1_IT0 NVIC 已使能且优先级=3 ≤ configMAX_SYSCALL 边界, 可行)。
+  *            FDCAN2_IT0 NVIC 已使能且优先级=3 ≤ configMAX_SYSCALL 边界, 可行)。
   *          - 发: HAL_FDCAN_AddMessageToTxFifoQ 提交到 TX FIFO; 统一在 Poll 里发送,
   *            单写者免锁; NART=DISABLE(与从端一致, 单发不重传, 网路隔离)。
   *          - 在线判定仅在主端做: 3s 无 0x210 → online=0(供 RPMSG 上报 A7)。
@@ -29,6 +29,11 @@ CAN_MasterMonitor_t g_can_master_mon;
 volatile uint8_t g_can_master_cmd_pending = 0u;
 volatile uint8_t g_can_master_cmd_value   = 0u;
 
+#if (CAN_MASTER_DEBUG_AUTO_GATE_MS > 0u)
+/* 调试后门: 上次自动开闸指令发出时刻(ms), 上电 3s 后首发 */
+static uint32_t s_dbg_gate_tick = 0u;
+#endif
+
 void CAN_Master_Init(void)
 {
   FDCAN_FilterTypeDef f;
@@ -41,15 +46,15 @@ void CAN_Master_Init(void)
   f.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
   f.FilterID1    = CAN_MASTER_EVT_ID;        /* 值 0x200 */
   f.FilterID2    = 0x700u;                   /* 掩码: 高5位匹配 => 收 0x200~0x2FF(事件+心跳) */
-  st = HAL_FDCAN_ConfigFilter(&hfdcan1, &f);
+  st = HAL_FDCAN_ConfigFilter(&hfdcan2, &f);
   if (st == HAL_OK)
   {
-    st = HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT,
+    st = HAL_FDCAN_ConfigGlobalFilter(&hfdcan2, FDCAN_REJECT, FDCAN_REJECT,
                                       FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
   }
   if (st == HAL_OK)
   {
-    st = HAL_FDCAN_Start(&hfdcan1);
+    st = HAL_FDCAN_Start(&hfdcan2);
   }
   /* 失败不硬复位: online 维持 0, 后续 Poll 仍运行(不会收帧) */
 }
@@ -69,7 +74,7 @@ uint8_t CAN_Master_SendCmd(uint8_t cmd)
   tx.FDFormat    = FDCAN_CLASSIC_CAN;
   data[0] = cmd;
 
-  st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx, data);
+  st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &tx, data);
   if (st == HAL_OK)
   {
     g_can_master_mon.tx_ok_count++;
@@ -89,6 +94,22 @@ void CAN_Master_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
 
+  /* ---- 调试: 采一次 TX FIFO 空闲级/填充级(判断 M4 帧有没有被 ACK 发完) ---- */
+  {
+    uint32_t free = HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2);
+    g_can_master_mon.tx_fifo_free = free;
+    g_can_master_mon.tx_fifo_fill = (free < 8u) ? (8u - free) : 0u;
+  }
+
+  /* ---- 调试后门: 每 N ms 自动发一次开闸指令(宏在 can_master.h, 置 0 关闭) ---- */
+#if (CAN_MASTER_DEBUG_AUTO_GATE_MS > 0u)
+  if ((now - s_dbg_gate_tick) >= CAN_MASTER_DEBUG_AUTO_GATE_MS)
+  {
+    s_dbg_gate_tick = now;
+    (void)CAN_Master_SendCmd(CAN_CMD_OPEN_GATE);
+  }
+#endif
+
   /* ---- 发: 提交外部(调试器/RPMSG)请的指令, 单次 ---- */
   if (g_can_master_cmd_pending != 0u)
   {
@@ -97,16 +118,17 @@ void CAN_Master_Poll(void)
     g_can_master_cmd_value = 0u;
   }
 
-  /* ---- 收: 轮询清空 FDCAN1 RX FIFO0(零中断) ---- */
-  while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0u)
+  /* ---- 收: 轮询清空 FDCAN2 RX FIFO0(零中断) ---- */
+  while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0u)
   {
     FDCAN_RxHeaderTypeDef rh;
     uint8_t data[8];
 
-    if (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rh, data) != HAL_OK)
+    if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &rh, data) != HAL_OK)
     {
       break;
     }
+    g_can_master_mon.rx_total++;   /* 只要进 FIFO0 就计(回环自测直接看这个)  */
     /* 帧校验(协议恒 DLC=8, 见 can.md §3.5 精神): 非标准帧/非 8 字节丢弃 */
     if ((rh.IdType != FDCAN_STANDARD_ID) || ((rh.DataLength >> 16) != 8u))
     {

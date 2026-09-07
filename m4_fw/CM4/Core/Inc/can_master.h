@@ -6,7 +6,7 @@
   *
   *          协议字节级定义见 c8t6/can.md(与 c8t6 从端共用同一张表)；
   *          角色 = CAN 主节点：发 0x100 指令、收 0x200 事件 / 0x210 心跳。
-  *          - 收: CANRxTask 每 CAN_MASTER_POLL_MS 轮询 FDCAN1 RX FIFO0(零中断)；
+  *          - 收: CANRxTask 每 CAN_MASTER_POLL_MS 轮询 FDCAN2 RX FIFO0(零中断)；
   *          - 发: 主端单工发送(命令由 Poll 统一提交到 TX FIFO)，无需互斥；
   *          - 在线判定: 主端 3s 收不到 0x210 → 判 C8T6 离线(供后续 RPMSG 上报)。
   *
@@ -46,6 +46,12 @@ extern "C" {
 #define CAN_MASTER_POLL_MS      10u   /* CANRxTask 轮询周期 ms */
 #define CAN_MASTER_OFFLINE_MS 3000u   /* 3s 无 0x210 → C8T6 离线 */
 
+/* ---------- ⚠️ 调试后门(联调用) ----------
+   >0: CAN_Master_Poll 每 N ms 自动发一次开闸指令(0x100/0x01),
+       免调试器手写变量即可验证 M4→C8T6 方向; 0=关闭。
+       接 RPMSG 主链路(A7 下发指令)后置 0, 勿带进正式版。 */
+#define CAN_MASTER_DEBUG_AUTO_GATE_MS 3000u
+
 /* 从端状态快照(供调试器 live watch / 后续 RPMSG 上报用) */
 typedef struct {
   uint8_t  online;          /* 1=C8T6 在线(收到过 0x210 且未超时) */
@@ -58,8 +64,11 @@ typedef struct {
   uint32_t last_ev_tick;    /* 最近一次收 0x200 的时刻(ms) */
   uint32_t hb_count;        /* 收到心跳次数 */
   uint32_t ev_count;        /* 收到事件次数 */
-  uint32_t tx_ok_count;     /* 指令发送成功次数 */
+  uint32_t rx_total;        /* 收进 RX FIFO0 的总帧数(无论是否解析; 回环自测看这个) */
+  uint32_t tx_ok_count;     /* 指令发送成功次数(入队) */
   uint32_t tx_err_count;    /* 指令发送失败次数 */
+  uint32_t tx_fifo_free;    /* TX FIFO 空闲元素数(0~8). 发完被ACK会回满; 一直低=没人ACK */
+  uint32_t tx_fifo_fill;    /* TX FIFO 中未完成(未ACK)帧数 = 8 - free */
 } CAN_MasterMonitor_t;
 
 /* 调度器启动前(main USER CODE 2)调用一次: 标准掩码过滤(收 0x200~0x2FF)

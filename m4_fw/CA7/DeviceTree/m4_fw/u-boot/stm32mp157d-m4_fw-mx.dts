@@ -54,10 +54,10 @@
 
 &pinctrl {
 
-	m4_fdcan1_pins_mx: m4_fdcan1_mx-0 {
+	m4_fdcan2_pins_mx: m4_fdcan2_mx-0 {
 		pins {
-			pinmux = <STM32_PINMUX('D', 0, RSVD)>, /* FDCAN1_RX */
-					 <STM32_PINMUX('D', 1, RSVD)>; /* FDCAN1_TX */
+			pinmux = <STM32_PINMUX('B', 5, RSVD)>, /* FDCAN2_RX */
+					 <STM32_PINMUX('B', 6, RSVD)>; /* FDCAN2_TX */
 		};
 	};
 
@@ -116,13 +116,13 @@
 	/* USER CODE END m4_dma2 */
 };
 
-&m4_m_can1 {
+&m4_m_can2 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&m4_fdcan1_pins_mx>;
+	pinctrl-0 = <&m4_fdcan2_pins_mx>;
 	status = "okay";
 
-	/* USER CODE BEGIN m4_m_can1 */
-	/* USER CODE END m4_m_can1 */
+	/* USER CODE BEGIN m4_m_can2 */
+	/* USER CODE END m4_m_can2 */
 };
 
 &mdma1 {

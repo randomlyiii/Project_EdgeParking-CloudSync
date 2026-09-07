@@ -25,7 +25,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "ssd1306.h"
 #include "can_master.h"
 /* USER CODE END Includes */
 
@@ -94,19 +93,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_FDCAN1_Init();
+  MX_FDCAN2_Init();
   /* USER CODE BEGIN 2 */
-  ssd1306_Init();
-  ssd1306_Clear(0);
-  ssd1306_SetCursor(28, 2);
-  ssd1306_WriteString("Hello World!");
-  ssd1306_SetCursor(8, 4);
-  ssd1306_WriteString("M4 I2C1 OLED");
-  ssd1306_Update();
-
+  /* FDCAN 时钟自动适配: 实测内核时钟并换算 500k 位时序(工程模式=100MHz,
+     Linux 引导=62.5MHz, 两者时钟不同; 结果见 g_fdcan_meas_hz/g_fdcan_cfg_*)。
+     必须在 MX_FDCAN2_Init() 之后、CAN_Master_Init()(Start) 之前。 */
+  FDCAN2_AutotuneBitTiming();
   /* CAN 主端(网关)启动(调度器启动前): 过滤器(收 0x200~0x2FF)+全局过滤+Start。
-     此后收包与离线判定由 CANRxTask 每 10ms 轮询完成(can_master.c)；
-  　 板级 I2C1 OLED 物理不可达, 仅作代码就绪; 演示状态见 can_master 监视快照。 */
+     此后收包与离线判定由 CANRxTask 每 10ms 轮询完成(can_master.c);
+     演示状态见监视快照 g_can_master_mon。 */
   CAN_Master_Init();
   /* USER CODE END 2 */
 

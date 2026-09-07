@@ -36,7 +36,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* ⚠️ 调试心跳灯(联调用): defaultTask 每 N ms 翻转底板 LED_GREEN(PA10, 低电平亮)
+   = 1Hz 闪烁, 是"固件在跑"的直接证据。引脚来自 100ASK 官方 01_LED 例程。
+   置 0 关闭; 接 RPMSG 主链路后建议置 0。 */
+#define DBG_LED_HEARTBEAT_MS 500u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -62,8 +65,6 @@ const osThreadAttr_t CAN_Rx_Task_attributes = {
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* (注: 原 CanRxQueue(16×uint32) 已移除——收路径改为 CANRxTask 轮询 FDCAN1 RX FIFO0,
-   直接解析, 无需队列; 见 can_master.c。CubeMX regen 后需确认 Queues01 为空) */
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -97,9 +98,6 @@ void MX_FREERTOS_Init(void) {
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* (CanRxQueue 已移除: 收路径为 CAN_Master_Poll 轮询解析, 见 can_master.c / can.h) */
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -131,11 +129,29 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+#if (DBG_LED_HEARTBEAT_MS > 0u)
+  GPIO_InitTypeDef gpio = {0};
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  gpio.Pin   = GPIO_PIN_10;            /* LED_GREEN, 低电平亮 */
+  gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull  = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &gpio);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   /* 先灭 */
+
+  /* Infinite loop */
+  for(;;)
+  {
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_10);
+    osDelay(DBG_LED_HEARTBEAT_MS);
+  }
+#else
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
+#endif
   /* USER CODE END StartDefaultTask */
 }
 
@@ -150,7 +166,7 @@ void CANRxTask(void *argument)
 {
   /* USER CODE BEGIN CANRxTask */
   /* CAN 已在 main 裸机段 Init(过滤器+Start, can_master.c)。
-     本任务每 10ms 轮询 FDCAN1 RX FIFO0: 收 0x200 事件/0x210 心跳 → 更新监视快照;
+     本任务每 10ms 轮询 FDCAN2 RX FIFO0: 收 0x200 事件/0x210 心跳 → 更新监视快照;
      提交外部(调试器/RPMSG)请求的 0x100 指令; 3s 无心跳 → online=0。
      零中断轮询理由见 can_master.c 头注(can.md §5.2 同风格)。 */
   for(;;)
