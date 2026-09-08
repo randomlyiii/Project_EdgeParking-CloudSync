@@ -52,7 +52,7 @@ void CAN_Node_Poll(void);
 uint8_t CAN_Node_SendEvent(uint8_t ev, uint16_t lux, uint8_t drop);
 
 /* ---------- 供 OLED/状态显示读取 ---------- */
-uint8_t  CAN_Node_GateOpen(void);          /* 1=闸开(收到 0x100/0x01) */
+uint8_t  CAN_Node_GateOpen(void);          /* 1=闸执行到位(收 0x100/0x01 后缓动完成, gate.c) */
 uint8_t  CAN_Node_TxError(void);           /* 1=最近一次发送失败(状态位 bit3 同源) */
 uint32_t CAN_Node_LastEventTick(void);     /* 最近一次成功发 0x200 的 tick(ms)，0=从未 */
 uint32_t CAN_Node_LastAckTick(void);       /* 最近一次收到 0x110 事件确认的 tick(ms)，0=从未 */

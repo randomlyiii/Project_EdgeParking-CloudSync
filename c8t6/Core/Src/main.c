@@ -25,8 +25,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "config.h"      /* OLED_TITLE_STR 等全局常量 */
 #include "ssd1306.h"
 #include "can_node.h"
+#include "tim.h"         /* MX_TIM2_Init: TIM2_CH1 PWM(PA0), SG90 50Hz */
+#include "gate.h"        /* Gate_Init: PWM Start + 关位 + 上电自检 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -100,12 +103,19 @@ int main(void)
   __HAL_RCC_AFIO_CLK_ENABLE();
   __HAL_AFIO_REMAP_I2C1_DISABLE();
 
+  /* SG90 道闸: TIM2_CH1 PWM(PA0, 50Hz) 初始化(须在 PWM Start 前) */
+  MX_TIM2_Init();
+
   /* 开机画面：调度器启动前裸机点屏(与 Keil 参考工程等价路径)。
-     标题行后续由 OLED_Task 按正常界面持续刷新(行1 HelloWorld)。 */
+     标题行后续由 OLED_Task 按正常界面持续刷新(行1 OLED_TITLE_STR=PARK NODE)。 */
   SSD1306_Init();
   SSD1306_Fill(0x00);
-  SSD1306_ShowString(1, 1, "HelloWorld");
+  SSD1306_ShowString(1, 1, OLED_TITLE_STR);
   SSD1306_UpdateScreen();
+
+  /* 道闸执行层: PWM Start + 置关位 + 上电自检(0°→90°→0°, GATE_SELFTEST=1 时,
+     阻塞约 0.7s; 稳定后可置 0)。 */
+  Gate_Init();
 
   /* CAN 2.0 从节点启动(调度器启动前)：过滤器(收 0x1xx 指令) + Start。
      此后收帧由 CAN_Rx_Task 每 10ms 轮询 FIFO0 完成(见 can_node.c / can.md)；

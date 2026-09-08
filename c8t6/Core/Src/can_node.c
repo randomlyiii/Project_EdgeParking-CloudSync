@@ -20,6 +20,7 @@
 #include "can_node.h"
 #include "can.h"        /* hcan(500k, NART=ENABLE, 见 can.c) */
 #include "config.h"
+#include "gate.h"       /* 道闸执行层: 0x100 指令→Gate_SetTarget, 状态读 Gate_IsOpen */
 #include "shade.h"
 #include "FreeRTOS.h"
 #include "cmsis_os.h"
@@ -28,9 +29,9 @@
 /* freertos.c MX_FREERTOS_Init() 创建的 CAN 发送互斥(USER CODE RTOS_MUTEX 段) */
 extern osMutexId_t CanTxMutexHandle;
 
-/* 节点私有状态(单写者规则: s_gate_open 仅 Poll 写; s_tx_err 仅 CAN_TxFrame 写;
-   s_last_event_tick 仅 SendEvent 写; 其余任务只读, 8/32 位读写天然原子) */
-static volatile uint8_t  s_gate_open        = 0u;   /* 1=闸开 */
+/* 节点私有状态(单写者规则: s_tx_err 仅 CAN_TxFrame 写; s_last_event_tick 仅 SendEvent 写;
+   s_ack_tick 仅 Poll 写; 其余任务只读, 8/32 位读写天然原子)。
+   闸状态不再在 CAN 层维护"逻辑位"——真实到位状态由 gate.c 提供(Gate_IsOpen/IsMoving)。 */
 static volatile uint8_t  s_tx_err           = 0u;   /* 1=最近一次发送失败 */
 static volatile uint32_t s_last_event_tick  = 0u;   /* 最近成功发 0x200 的 tick */
 static volatile uint32_t s_ack_tick         = 0u;   /* 最近收到 0x110 事件确认的 tick(0=从未) */
@@ -48,7 +49,7 @@ volatile CAN_NodeDbg_t g_can_node_dbg;
 static uint8_t StatusBits_Calc(void)
 {
   uint8_t b = 0u;
-  if (s_gate_open)          b |= CAN_STAT_GATE_OPEN;
+  if (Gate_IsOpen())        b |= CAN_STAT_GATE_OPEN;   /* 执行到位(真实闸位, 非指令态) */
   if (Shade_IsShaded())     b |= CAN_STAT_SHADED;
   if (Shade_SensorFault())  b |= CAN_STAT_LUX_FAULT;
   if (s_tx_err)             b |= CAN_STAT_CAN_ERR;
@@ -140,6 +141,9 @@ void CAN_Node_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
 
+  /* 道闸缓动步进(10ms 节拍; 目标由下方 0x100 OPEN/CLOSE case 通过 Gate_SetTarget 设置) */
+  Gate_Poll();
+
   /* ---- 调试: 采一次 CAN_ESR(REC/TEC/LEC/BOFF), 供 live watch ----
      F1 的 CAN_ESR 位段(RM0008): REC=[23:16] TEC=[15:8] LEC=[6:4] BOFF=[2] */
   g_can_node_dbg.can_esr_raw = hcan.Instance->ESR;
@@ -187,11 +191,11 @@ void CAN_Node_Poll(void)
       switch (data[0])             /* 至此只剩 0x100 指令帧 */
       {
         case CAN_CMD_OPEN_GATE:
-          s_gate_open = 1u;
-          g_can_node_dbg.gate_opens++;
+          g_can_node_dbg.gate_opens++;   /* 收到开闸指令次数 */
+          Gate_SetTarget(1u);            /* 缓动开到 90°(到位后 bit0/OLED 才显示 OPEN) */
           break;
         case CAN_CMD_CLOSE_GATE:
-          s_gate_open = 0u;
+          Gate_SetTarget(0u);            /* 缓动回 0° */
           break;
         case CAN_CMD_QUERY:   /* 查询: 回一帧 0x200 快照(载荷同事件帧) */
           memset(d, 0, sizeof(d));
@@ -238,7 +242,7 @@ uint8_t CAN_Node_SendEvent(uint8_t ev, uint16_t lux, uint8_t drop)
 
 uint8_t CAN_Node_GateOpen(void)
 {
-  return s_gate_open;
+  return Gate_IsOpen();   /* 执行到位(非指令态); 缓动中由 OLED 用 Gate_IsMoving 显示 MOVE */
 }
 
 uint8_t CAN_Node_TxError(void)

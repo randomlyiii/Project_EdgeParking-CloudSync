@@ -31,6 +31,7 @@
 #include "ssd1306.h"
 #include "shade.h"
 #include "can_node.h"
+#include "gate.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -357,8 +358,8 @@ void OLEDTask(void *argument)
       osMutexAcquire(OledMutexHandle, osWaitForever);
       SSD1306_Fill(0x00);
 
-      /* 行1: 标题 */
-      SSD1306_ShowString(OLED_LINE_TITLE, 1, "HelloWorld");
+      /* 行1: 标题(正式名, 见 config.h OLED_TITLE_STR) */
+      SSD1306_ShowString(OLED_LINE_TITLE, 1, OLED_TITLE_STR);
 
       /* 行2: 光照 + 掉点(BH1750; 故障显示 Lux:ERR) */
       if (lux == BH1750_ERR_VALUE)
@@ -372,8 +373,15 @@ void OLEDTask(void *argument)
       }
       SSD1306_ShowString(OLED_LINE_LUX, 1, line);
 
-      /* 行3: 道闸状态(收到 0x100 开闸指令后翻转) */
-      snprintf(line, sizeof(line), "Gate:%s", CAN_Node_GateOpen() ? "OPEN" : "CLOSE");
+      /* 行3: 道闸执行状态(真实到位; 缓动途中显示 MOVE) */
+      if (Gate_IsMoving())
+      {
+        snprintf(line, sizeof(line), "Gate:MOVE");
+      }
+      else
+      {
+        snprintf(line, sizeof(line), "Gate:%s", Gate_IsOpen() ? "OPEN " : "CLOSE");
+      }
       SSD1306_ShowString(OLED_LINE_GATE, 1, line);
 
       /* 行4: CAN 链路 */
