@@ -26,6 +26,8 @@ extern "C" {
 
 /* =========================== CAN 2.0(经典 CAN / 500k / 标准帧) ========== */
 #define CAN_CMD_ID          0x100u   /* 主(M4)→从(C8T6) 指令帧 ID(0x1xx 段) */
+#define CAN_ACK_ID          0x110u   /* 主(M4)→从 事件确认帧 ID: 收到 0x200 后回执,
+                                        d[0]=回显事件码(0x01 遮光/0x00 恢复) */
 #define CAN_EVT_ID          0x200u   /* 从→主 事件帧 ID */
 #define CAN_HB_ID           0x210u   /* 从→主 心跳帧 ID(1Hz) */
 #define CAN_POLL_PERIOD_MS     10u   /* CAN_Rx_Task 轮询周期 ms(收+心跳节拍) */
@@ -47,6 +49,7 @@ extern "C" {
 #define OLED_LINE_CAN          4u
 #define OLED_REFRESH_MS      200u    /* OLED_Task 上屏周期 ms */
 #define OLED_EVT_FLASH_MS   1000u    /* 遮光事件后 Line4 闪 "CAN:EVT" 时长 ms */
+#define OLED_ACK_FLASH_MS   1000u    /* 收 0x110 确认后 Line4 显示 "CAN:*OK*" 时长 ms */
 
 #ifdef __cplusplus
 }

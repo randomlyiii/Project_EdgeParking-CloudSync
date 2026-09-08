@@ -55,6 +55,7 @@ uint8_t CAN_Node_SendEvent(uint8_t ev, uint16_t lux, uint8_t drop);
 uint8_t  CAN_Node_GateOpen(void);          /* 1=闸开(收到 0x100/0x01) */
 uint8_t  CAN_Node_TxError(void);           /* 1=最近一次发送失败(状态位 bit3 同源) */
 uint32_t CAN_Node_LastEventTick(void);     /* 最近一次成功发 0x200 的 tick(ms)，0=从未 */
+uint32_t CAN_Node_LastAckTick(void);       /* 最近一次收到 0x110 事件确认的 tick(ms)，0=从未 */
 uint8_t  CAN_Node_StatusBits(void);        /* 汇总 0x200 d[4]/0x210 d[0] 状态字节 */
 
 /* ---------- 调试监视(供调试器 live watch；类同 M4 g_can_master_mon) ----------

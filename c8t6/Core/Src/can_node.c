@@ -33,6 +33,7 @@ extern osMutexId_t CanTxMutexHandle;
 static volatile uint8_t  s_gate_open        = 0u;   /* 1=闸开 */
 static volatile uint8_t  s_tx_err           = 0u;   /* 1=最近一次发送失败 */
 static volatile uint32_t s_last_event_tick  = 0u;   /* 最近成功发 0x200 的 tick */
+static volatile uint32_t s_ack_tick         = 0u;   /* 最近收到 0x110 事件确认的 tick(0=从未) */
 static volatile uint32_t s_hb_last_tick     = 0u;   /* 上次心跳 tick */
 
 /* 调试监视(全局开放, 调试器 live watch)。volatile 防止优化器把"只写不读"的全局删掉 */
@@ -164,14 +165,26 @@ void CAN_Node_Poll(void)
       drained++;
       g_can_node_dbg.rx_total++;   /* 只要进了 FIFO0 就计(无论是否解析) */
 
-      /* 帧校验(正常模式, can.md 审计整改项): 只收标准帧 0x100 且 DLC=8,
-        其余丢弃——硬件掩码过滤器(0x1xx 段)之外的二次软件校验。
-        注: 联调期曾临时关闭放行异常帧, 收尾后恢复。 */
-      if ((rh.IDE != CAN_ID_STD) || (rh.StdId != CAN_CMD_ID) || (rh.DLC != 8u))
+      /* 帧校验(正常模式, can.md 审计整改项): 只收标准帧且 DLC=8——
+         0x100 指令 与 0x110 事件确认(config.h); 其余丢弃。
+         硬件掩码过滤器(0x1xx 段)之外的二次软件校验。 */
+      if ((rh.IDE != CAN_ID_STD) || (rh.DLC != 8u) ||
+          ((rh.StdId != CAN_CMD_ID) && (rh.StdId != CAN_ACK_ID)))
       {
         continue;
       }
-      switch (data[0])
+
+      /* 0x110 事件确认帧按【帧 ID】分发 —— ⚠️ 不能放 switch(data[0]):
+         CAN_ACK_ID=0x110(272) 超出 uint8 data[0] 范围永不匹配(曾致确认永不显示);
+         且 d[0]=回显事件码(0x01/0x00)会与 0x100 指令码混淆(0x01=开闸)。
+         故在指令解析前单独处理并跳过。 */
+      if (rh.StdId == CAN_ACK_ID)
+      {
+        s_ack_tick = now;          /* 记确认时刻, OLED 行4 显示 Sended 标识 */
+        continue;
+      }
+
+      switch (data[0])             /* 至此只剩 0x100 指令帧 */
       {
         case CAN_CMD_OPEN_GATE:
           s_gate_open = 1u;
@@ -236,6 +249,11 @@ uint8_t CAN_Node_TxError(void)
 uint32_t CAN_Node_LastEventTick(void)
 {
   return s_last_event_tick;
+}
+
+uint32_t CAN_Node_LastAckTick(void)
+{
+  return s_ack_tick;
 }
 
 uint8_t CAN_Node_StatusBits(void)

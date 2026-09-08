@@ -331,16 +331,23 @@ void OLEDTask(void *argument)
        行1 标题 | 行2 Lux+drop% | 行3 Gate 道闸 | 行4 CAN 链路状态 */
     {
       uint32_t now = osKernelGetTickCount();
-      uint8_t ev_flash = (uint32_t)(now - CAN_Node_LastEventTick()) < OLED_EVT_FLASH_MS;
+      uint32_t ev_tick  = CAN_Node_LastEventTick();
+      uint32_t ack_tick = CAN_Node_LastAckTick();
       const char *can_st;
 
-      if (ev_flash)
-      {
-        can_st = "CAN:EVT ";        /* 刚收到/发出过遮光事件, 闪烁 OLED_EVT_FLASH_MS */
-      }
-      else if (CAN_Node_TxError())
+      /* 行4 状态集: CAN:OK | CAN:EVT(事件已发未确认) | CAN:*OK*(★板子已回 0x110 确认)
+         | CAN:ERR。tick=0 表示从未发生(启动时不误闪)。 */
+      if (CAN_Node_TxError())
       {
         can_st = "CAN:ERR ";        /* 最近一次发送失败(邮箱满/无 ACK) */
+      }
+      else if ((ack_tick != 0u) && ((uint32_t)(now - ack_tick) < OLED_ACK_FLASH_MS))
+      {
+        can_st = "CAN:Sended";        /* ★ 特殊标识: 板子(M4)已回 0x110 确认收到光敏事件 */
+      }
+      else if ((ev_tick != 0u) && ((uint32_t)(now - ev_tick) < OLED_EVT_FLASH_MS))
+      {
+        can_st = "CAN:EVT ";        /* 光敏事件已发出, 等待/未确认窗口 */
       }
       else
       {
