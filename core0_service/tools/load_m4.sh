@@ -15,18 +15,21 @@ FW=${FW:-/lib/firmware/m4_fw.elf}
 RP=${RP:-/sys/class/remoteproc/remoteproc0}
 DEV=/dev/ttyRPMSG0
 
-# --- 释放 FDCAN2(can0)：Linux m_can 驱动不得在 M4 运行期间持有 4400f000.can。
-#     幂等(重复执行无害)，失败静默忽略(ASCII 注释，板端安全)。
-release_can() {
-    ip link set can0 down 2>/dev/null
+# --- 保证 FDCAN2 内核时钟(fdcan_k)开启后再启 M4(2026-09-10 板验关键修正) ---
+#     旧做法"can0 down + unbind 4400f000.can"是错的: unbind 后内核 clk 框架把
+#     fdcan_k 关闭(enable=0) -> M4 的 HAL_FDCAN_Init 无时钟卡死 -> CAN 全聋
+#     (NBTP 恒为复位值), 且连带 OpenAMP 引导不稳。正确姿势: m_can 保持绑定,
+#     can0 UP(500k) 点亮时钟, A7 静听不发(勿从 A7 发包)。幂等(重复执行无害)。
+ensure_can_clock() {
     dev="/sys/bus/platform/devices/4400f000.can"
-    if [ -L "$dev/driver" ]; then
-        drv=$(readlink "$dev/driver" 2>/dev/null)
-        drv=${drv##*/}
-        if [ -n "$drv" ] && [ -w "/sys/bus/platform/drivers/$drv/unbind" ]; then
-            echo 4400f000.can > "/sys/bus/platform/drivers/$drv/unbind" 2>/dev/null
-        fi
+    [ -e "$dev" ] || return 0
+    if [ ! -L "$dev/driver" ]; then
+        echo 4400f000.can > /sys/bus/platform/drivers/m_can_platform/bind 2>/dev/null
+        sleep 1
     fi
+    ip link set can0 type can bitrate 500000 2>/dev/null
+    ip link set can0 up 2>/dev/null
+    # 确认时钟已开(可选: grep -A1 fdcan_k /sys/kernel/debug/clk/clk_summary)
 }
 
 do_status() {
@@ -66,7 +69,7 @@ bind_channel() {
 
 case "$1" in
     start)
-        release_can
+        ensure_can_clock
         if [ ! -f "$FW" ]; then
             echo "固件不存在: $FW （先把编译出的 .elf cp 到 /lib/firmware/）" >&2
             exit 2

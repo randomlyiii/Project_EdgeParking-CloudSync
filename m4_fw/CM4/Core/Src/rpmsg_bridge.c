@@ -40,6 +40,7 @@
 #include "openamp.h"          /* CubeMX 生成(CM4/OPENAMP/) -> openamp_conf.h */
 #include "virt_uart.h"        /* VIRT_UART_* API(Middlewares/Third_Party/OpenAMP/virtual_driver),
                                  显式包含——生成 openamp.h 不保证带出 */
+#include "ipcc.h"             /* MX_IPCC_Init(CubeMX 生成, IPCC 外设) */
 
 #include "rpmsg_types.h"
 #include "rpmsg_proto.h"
@@ -243,6 +244,17 @@ void Rpmsg_Task(void *argument)
   memset(&g_rpmsg_bridge_mon, 0, sizeof(g_rpmsg_bridge_mon));
   g_rpmsg_bridge_mon.online_latched = 0xFFu;                  /* 未初始化基线 */
   g_rpmsg_bridge_mon.vuart_init_rc  = 0xFFu;                  /* 端点尚未尝试创建 */
+
+  /* ⚠️ 2026-09-10 板验修正: OpenAMP 框架初始化(原 main.c 调度器前)移入本任务。
+     原因: MX_OPENAMP_Init 内 wait_remote_ready 会无限忙等(Linux 未就绪场景),
+     放 main 会卡死整个系统(FDCAN/CAN/调度器全起不来, CAN 全聋)。
+     在此初始化: 卡死只冻结本任务, CANRxTask/defaultTask 照常跑。
+     工程模式(CubeIDE 单跑)无 Linux 主端, 跳过。 */
+  if (!IS_ENGINEERING_BOOT_MODE())
+  {
+    MX_IPCC_Init();
+    (void)MX_OPENAMP_Init(RPMSG_REMOTE, NULL);
+  }
 
   s_evt_q = osMessageQueueNew(RPMSG_BRIDGE_EVT_QUEUE_LEN,
                               sizeof(rpmsg_can_evt_msg_t), NULL);

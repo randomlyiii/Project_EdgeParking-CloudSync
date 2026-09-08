@@ -165,12 +165,17 @@ void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef* fdcanHandle)
 
 /* USER CODE BEGIN 1 */
 
-/* ---- FDCAN 时钟实测 + 500k 位时序自动换算(2026-09-08) ----
+/* ---- FDCAN 时钟实测 + 500k 位时序自动换算(2026-09-08; 2026-09-10 修正) ----
    背景: 同一块板两种运行环境 FDCAN 内核时钟不同——
    工程模式(CubeIDE)=PLL3Q 100MHz(.ioc); Linux 引导/remoteproc=62.5MHz(实测)。
    静态位时序无法两全, 故启动时实测一次, 自动换算出 500k 的 Prescaler/Seg1/Seg2。
    用法: main.c 在 MX_FDCAN2_Init() 之后、CAN_Master_Init()(Start)之前调一次。
-   实测失败时保持 .ioc 静态默认(100MHz 工程模式配置), 不影响工程模式。 */
+
+   ⚠️ 2026-09-10 板验修正: Linux 引导下 HAL_RCCEx_GetPeriphCLKFreq(FDCAN) 的读数
+   不可靠——m_can 释放(unbind)后内核把 fdcan_k 时钟树关闭(enable=0), M4 侧从
+   RCC mux 误测 ~8MHz → Autotune 得 pres=1/16tq → 实发 62.5M/16=3.9Mbps,
+   C8T6(500k)全聋。故非工程模式不再信实测, 直接按已知 62.5MHz 锁位时序;
+   工程模式(CubeIDE 100MHz)仍走实测换算(实测失败兜底 .ioc 静态 100MHz)。 */
 
 volatile uint32_t g_fdcan_meas_hz = 0u;   /* 实测 FDCAN 内核时钟(Hz), 调试器 live watch */
 volatile uint32_t g_fdcan_cfg_pre  = 0u;  /* 自动换算 Prescaler */
@@ -182,6 +187,11 @@ void FDCAN2_AutotuneBitTiming(void)
   uint32_t fclk, ttq, q = 0u, p = 0u;
 
   fclk = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FDCAN);
+  if (!IS_ENGINEERING_BOOT_MODE())
+  {
+    fclk = 62500000u;             /* Linux 引导: HAL 读数失真(m_can 释放后内核关 fdcan_k),
+                                    直接锁已知 62.5MHz, 见文件头 2026-09-10 修正说明 */
+  }
   g_fdcan_meas_hz = fclk;
   ttq = (fclk >= 500000u) ? (fclk / 500000u) : 0u;  /* 每位所需 tq 数 */
 

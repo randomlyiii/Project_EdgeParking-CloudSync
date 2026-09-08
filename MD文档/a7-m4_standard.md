@@ -75,6 +75,27 @@ rpmsg_bridge.c：`VIRT_UART_Init` 不在一进任务就做，改为**任务启�
 
 ## 4. 板验记录与已知问题
 
+### 4.6 ⚠️ 重大根因修正（2026-09-10 晚，G3 全链路真机闭环）
+**"can0 释放" 方式错误是此前一切现象的贯穿根因**：
+- 旧做法 `can0 down + unbind 4400f000.can` → 内核 clk 框架**关闭 fdcan_k（enable=0）**
+  → M4 的 HAL_FDCAN_Init 无时钟卡死 → FDCAN2 NBTP 恒为复位值 0x06000A03、CAN 全聋，
+  且连带 OpenAMP 引导不稳（即 §4.2"重启 flaky：无 channel + CAN 死"现象的统一解释）。
+- **正确 recipe（实测 can0 up 后 M4 重启一次即成）**：m_can 保持绑定，
+  `ip link set can0 type can bitrate 500000` + `ip link set can0 up` 点亮时钟
+  （`/sys/kernel/debug/clk/clk_summary` 的 fdcan_k enable=1），A7 **静听不发**
+  （勿从 A7 发包，m_can 仅作监听/ACK）。板验结果：NBTP=0x00180200（正确 500k@62.5M）
+  + RPMSG `creating channel` 一次即成 + C8T6 收 0x100/0x01、0x02 闸门 OPEN/CLOSE 翻转。
+- §4.2 的"静坐几分钟再重启"建议随此修正**作废**；旧 AGENTS/can.md 中
+  "must release can0（unbind）" 结论作废，以本条为准。
+- M4 固件配套修正：fdcan.c Autotune 非工程模式直接锁 62.5MHz（不信 HAL 失真测量）；
+  main.c 将 IPCC/OpenAMP 初始化移入 Rpmsg_Task（调度器后），防 wait_remote_ready
+  卡死整个系统；`load_m4.sh` release_can → `ensure_can_clock()`（bind + can0 up，幂等）。
+- 板端无 can-utils 的 `timeout` 命令（`-T` 不可用），需用后台+kill 方式抓包。
+
+### 4.7 遗留
+① C8T6 遮光事件（手遮 → M4 → A7 0x21）与断链 0x22 边沿未测（C8T6 在场可补）；
+② 新 recipe 下重启稳定性待复测（can0 up 保持时多次 stop/start）；③ A7 正式服务交叉编译方案。
+
 ### 4.1 已验证（两次全通）
 - 内核 dyn debug 完整收到 NS 帧（"rpmsg-tty"+addr 0x400 逐字节正确）→ `creating channel` → `Received 1 messages`；
 - python3 验收：`0x13` 查询 → 即时 `0x23`（gate/online/can_err），0x7E 心跳 ~9 个/6s，**CRC 0 错**，双向通。
@@ -107,7 +128,7 @@ echo 'file drivers/remoteproc/remoteproc_virtio.c +p' > /sys/kernel/debug/dynami
 ## 5. 验收清单（G3 状态：传输层 ✅ / 全链路 ⏳）
 
 - [x] ttyRPMSG0 出现，0x13→0x23、0x7E 心跳、CRC 0 错（python3 免编译脚本，两次全通）
-- [ ] 0x11/0x12 开/关闸经 M4 → CAN 0x100 → C8T6 → SG90（需 C8T6 上总线）
+- [x] 0x11/0x12 开/关闸经 RPMSG → M4 → CAN 0x100 → C8T6，OLED 行3 Gate OPEN/CLOSE 翻转（2026-09-10 真机 ✅；SG90 舵机本体未挂，逻辑/帧路径已验证）
 - [ ] 手遮 BH1750 → 0x200 → M4 → A7 收 0x21（17B: id+dlc+data+tick）
 - [ ] C8T6 断链 → M4 发 0x22 边沿、恢复再 0x22
 - [ ] A7 侧断链/重连：rpmsg_link 1s 判 LINK_DOWN → 重开 → 自动 0x13 重同步

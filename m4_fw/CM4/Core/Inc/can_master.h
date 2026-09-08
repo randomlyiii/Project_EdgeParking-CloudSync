@@ -55,11 +55,11 @@ void CAN_Master_SetEventHook(CAN_Master_EventHook_t fn);
 #define CAN_MASTER_POLL_MS      10u   /* CANRxTask 轮询周期 ms */
 #define CAN_MASTER_OFFLINE_MS 3000u   /* 3s 无 0x210 → C8T6 离线 */
 
-/* ---------- 调试后门(已关闭=正式版, 2026-09-09) ----------
+/* ---------- 调试后门(已关闭=正式版, 2026-09-09; 09-10 曾临时置 3000 验证 C8T6 收 open, 已置回) ----------
    曾用: >0 时 CAN_Master_Poll 每 N ms 自动发一次开闸指令(0x100/0x01),
    免调试器写变量即可验证 M4→C8T6 方向。设计功能正式化后置 0;
    指令只由 CAN_Master_RequestCmd()/调试器写 g_can_master_cmd_pending 触发
-   (第3步起由 RPMSG 驱动)。 */
+   (第3步起由 RPMSG 驱动)。2026-09-10 板验 C8T6 收 open/close 经 RPMSG 全链路通过。 */
 #define CAN_MASTER_DEBUG_AUTO_GATE_MS 0u
 
 /* 从端状态快照(供调试器 live watch / 后续 RPMSG 上报用) */

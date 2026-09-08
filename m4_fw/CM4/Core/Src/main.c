@@ -88,13 +88,6 @@ int main(void)
     /* Configure the system clock */
     SystemClock_Config();
   }
-  else
-  {
-    /* IPCC initialisation */
-    MX_IPCC_Init();
-    /* OpenAmp initialisation ---------------------------------*/
-    MX_OPENAMP_Init(RPMSG_REMOTE, NULL);
-  }
 
   /* USER CODE BEGIN SysInit */
 
@@ -112,6 +105,11 @@ int main(void)
      此后收包与离线判定由 CANRxTask 每 10ms 轮询完成(can_master.c);
      演示状态见监视快照 g_can_master_mon。 */
   CAN_Master_Init();
+
+  /* ⚠️ 2026-09-10 板验修正: MX_IPCC_Init/MX_OPENAMP_Init 已移入 Rpmsg_Task 任务内
+     (rpmsg_bridge.c 任务入口)执行, 不再出现在调度器启动前——其内部 wait_remote_ready
+     会无限忙等, 留在 main 会卡死整个系统(FDCAN/CAN/调度器全起不来)。
+     CubeMX regen 会重新生成此区, 若 regen 后此处出现 IPCC/OpenAMP 调用需手动移除。 */
   /* USER CODE END 2 */
 
   /* Init scheduler */
