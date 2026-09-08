@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "can_master.h"
+#include "rpmsg_bridge.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,6 +61,13 @@ osThreadId_t CAN_Rx_TaskHandle;
 const osThreadAttr_t CAN_Rx_Task_attributes = {
   .name = "CAN_Rx_Task",
   .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for Rpmsg_Task(RPMSG 网关, 第3步; 栈尺寸见 rpmsg_bridge.h) */
+osThreadId_t Rpmsg_TaskHandle;
+const osThreadAttr_t Rpmsg_Task_attributes = {
+  .name = "Rpmsg_Task",
+  .stack_size = RPMSG_BRIDGE_TASK_STACK * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -107,7 +115,8 @@ void MX_FREERTOS_Init(void) {
   CAN_Rx_TaskHandle = osThreadNew(CANRxTask, NULL, &CAN_Rx_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* 第3步: RPMSG 网关任务(OpenAMP 单任务模型, 收发/心跳全在其内, 见 rpmsg_bridge.c) */
+  Rpmsg_TaskHandle = osThreadNew(Rpmsg_Task, NULL, &Rpmsg_Task_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */

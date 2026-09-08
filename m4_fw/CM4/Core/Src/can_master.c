@@ -29,6 +29,9 @@ CAN_MasterMonitor_t g_can_master_mon;
 volatile uint8_t g_can_master_cmd_pending = 0u;
 volatile uint8_t g_can_master_cmd_value   = 0u;
 
+/* RPMSG 桥收帧钩子(可空; 单写者: Rpmsg_Task 早期注册一次, 之后只读) */
+static CAN_Master_EventHook_t s_evt_hook = NULL;
+
 #if (CAN_MASTER_DEBUG_AUTO_GATE_MS > 0u)
 /* 调试后门: 上次自动开闸指令发出时刻(ms), 上电 3s 后首发 */
 static uint32_t s_dbg_gate_tick = 0u;
@@ -118,6 +121,11 @@ void CAN_Master_RequestCmd(uint8_t cmd)
   g_can_master_cmd_pending = 1u;
 }
 
+void CAN_Master_SetEventHook(CAN_Master_EventHook_t fn)
+{
+  s_evt_hook = fn;
+}
+
 void CAN_Master_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
@@ -161,6 +169,11 @@ void CAN_Master_Poll(void)
     if ((rh.IdType != FDCAN_STANDARD_ID) || ((rh.DataLength >> 16) != 8u))
     {
       continue;
+    }
+    /* 事件钩子(rpmsg_bridge 注册): 每解析出一帧 0x200/0x210 即回调一次 */
+    if (s_evt_hook != NULL)
+    {
+      s_evt_hook(rh.Identifier, (uint8_t)(rh.DataLength >> 16), data, now);
     }
     switch (rh.Identifier)
     {

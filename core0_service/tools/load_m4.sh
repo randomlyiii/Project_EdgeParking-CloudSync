@@ -15,6 +15,20 @@ FW=${FW:-/lib/firmware/m4_fw.elf}
 RP=${RP:-/sys/class/remoteproc/remoteproc0}
 DEV=/dev/ttyRPMSG0
 
+# --- 释放 FDCAN2(can0)：Linux m_can 驱动不得在 M4 运行期间持有 4400f000.can。
+#     幂等(重复执行无害)，失败静默忽略(ASCII 注释，板端安全)。
+release_can() {
+    ip link set can0 down 2>/dev/null
+    dev="/sys/bus/platform/devices/4400f000.can"
+    if [ -L "$dev/driver" ]; then
+        drv=$(readlink "$dev/driver" 2>/dev/null)
+        drv=${drv##*/}
+        if [ -n "$drv" ] && [ -w "/sys/bus/platform/drivers/$drv/unbind" ]; then
+            echo 4400f000.can > "/sys/bus/platform/drivers/$drv/unbind" 2>/dev/null
+        fi
+    fi
+}
+
 do_status() {
     echo "== status =="
     if [ -d "$RP" ]; then
@@ -38,6 +52,7 @@ wait_dev() {
 
 case "$1" in
     start)
+        release_can
         if [ ! -f "$FW" ]; then
             echo "固件不存在: $FW （先把编译出的 .elf cp 到 /lib/firmware/）" >&2
             exit 2

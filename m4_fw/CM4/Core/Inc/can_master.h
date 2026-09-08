@@ -26,6 +26,13 @@ extern "C" {
 
 #include "main.h"
 
+/* CAN 收帧事件钩子: CANRxTask(CAN_Master_Poll) 每解析出一帧标准 8B 帧后回调
+   (id, dlc, data, now)。rpmsg_bridge 注册它把 0x200/0x210 上送 A7；
+   注册时机: 任意任务早期(单写者, 之后只读)。 */
+typedef void (*CAN_Master_EventHook_t)(uint32_t id, uint8_t dlc,
+                                       const uint8_t *data, uint32_t now);
+void CAN_Master_SetEventHook(CAN_Master_EventHook_t fn);
+
 /* ---------- 帧 ID(与 c8t6/can.md §4、docs/protocols.md §1 一致) ---------- */
 #define CAN_MASTER_CMD_ID   0x100u   /* 主→从 指令 */
 #define CAN_MASTER_ACK_ID   0x110u   /* 主→从 事件确认: 收到 C8T6 的 0x200 后自动回执,
