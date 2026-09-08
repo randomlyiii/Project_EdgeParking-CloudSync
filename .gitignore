@@ -13,3 +13,6 @@ build/
 *.su
 *.cyclo
 *.ioc.bak
+
+# others
+code.txt

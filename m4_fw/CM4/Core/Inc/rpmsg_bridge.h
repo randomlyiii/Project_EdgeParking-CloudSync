@@ -40,14 +40,22 @@ extern "C" {
 #define RPMSG_BRIDGE_VUART_RXBUF    512u   /* VIRT_UART 单次 RX 缓冲(协议帧≤489) */
 #define RPMSG_BRIDGE_TASK_STACK     512u   /* words; rpmsg_rx_feed 栈帧含 489B 帧 */
 
+/* "rpmsg-tty" 端点创建策略(板端联调 2026-09-10 实测: 首个 NS announce kick 后 Linux 未建
+   通道, 现象=mbox IRQ 恒 1 + 无后续流量): 任务启动延时再首次创建, 失败每 2s 自动重试
+   (对齐 ST OpenAMP_FreeRTOS_echo 例程语义), 结果写 mon.vuart_init_rc/attempts 可见。 */
+#define RPMSG_BRIDGE_VUART_INIT_DELAY_MS  1000u /* 任务启动后首试延时 */
+#define RPMSG_BRIDGE_VUART_INIT_RETRY_MS  2000u /* 失败重试间隔 */
+
 /* 0x21 转发过滤: 1=只转发 0x200 事件帧(默认); 0=连 0x210 心跳也转发 */
 #define RPMSG_BRIDGE_FWD_HEARTBEAT  0u
 
 /* 运行监视快照(调试器 live watch / 排障; 与 g_can_master_mon 同风格) */
 typedef struct {
   uint8_t  vuart_ready;    /* 1=VIRT_UART 初始化+回调注册成功(OPENAMP 起来) */
+  uint8_t  vuart_init_rc;  /* 最近一次端点创建结果: 0=OK 1=ERR 0xFF=尚未尝试 */
   uint8_t  a7_alive;       /* 1=1s 内收到过 A7 的 CRC 通过帧 */
   uint8_t  online_latched; /* C8T6 在线状态基线(0xFF=未初始化); 变化即发 0x22 */
+  uint32_t vuart_init_attempts; /* 端点创建尝试次数 */
   uint32_t tx_frames;      /* 成功发出帧数(全部 type, 含心跳) */
   uint32_t tx_drop;        /* 重试后仍失败丢弃的帧数 */
   uint32_t rx_frames;      /* 收到 CRC 通过帧数 */

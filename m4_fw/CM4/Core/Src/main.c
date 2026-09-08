@@ -21,6 +21,8 @@
 #include "FreeRTOS.h"
 #include "cmsis_os2.h"
 #include "fdcan.h"
+#include "ipcc.h"
+#include "openamp.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -85,6 +87,13 @@ int main(void)
   {
     /* Configure the system clock */
     SystemClock_Config();
+  }
+  else
+  {
+    /* IPCC initialisation */
+    MX_IPCC_Init();
+    /* OpenAmp initialisation ---------------------------------*/
+    MX_OPENAMP_Init(RPMSG_REMOTE, NULL);
   }
 
   /* USER CODE BEGIN SysInit */

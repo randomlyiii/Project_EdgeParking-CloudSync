@@ -37,7 +37,9 @@
 #endif
 #endif
 
-#include "openamp.h"          /* CubeMX 生成(CM4/OPENAMP/) -> openamp_conf.h -> virt_uart.h */
+#include "openamp.h"          /* CubeMX 生成(CM4/OPENAMP/) -> openamp_conf.h */
+#include "virt_uart.h"        /* VIRT_UART_* API(Middlewares/Third_Party/OpenAMP/virtual_driver),
+                                 显式包含——生成 openamp.h 不保证带出 */
 
 #include "rpmsg_types.h"
 #include "rpmsg_proto.h"
@@ -58,6 +60,7 @@ static uint8_t         s_hb_ord;                              /* 0x7E 序号 0..
 static volatile uint8_t s_query_pending;                      /* 0x13 → 0x23 待发 */
 static uint32_t        s_last_hb_tick;
 static uint32_t        s_last_chk_tick;
+static uint32_t        s_last_init_tick;                      /* "rpmsg-tty" 端点创建节拍 */
 
 /* CAN 事件队列元素(hook 在 CANRxTask 上下文填充) */
 typedef struct {
@@ -239,28 +242,47 @@ void Rpmsg_Task(void *argument)
 
   memset(&g_rpmsg_bridge_mon, 0, sizeof(g_rpmsg_bridge_mon));
   g_rpmsg_bridge_mon.online_latched = 0xFFu;                  /* 未初始化基线 */
+  g_rpmsg_bridge_mon.vuart_init_rc  = 0xFFu;                  /* 端点尚未尝试创建 */
 
   s_evt_q = osMessageQueueNew(RPMSG_BRIDGE_EVT_QUEUE_LEN,
                               sizeof(rpmsg_can_evt_msg_t), NULL);
   rpmsg_rx_init(&s_rx);
   CAN_Master_SetEventHook(can_evt_hook);
 
-  /* OPENAMP 框架已由 main.c 的 MX_IPCC_Init + MX_OPENAMP_Init(CubeMX 生成)就绪;
-     这里建 "rpmsg-tty" 端点 → A7 侧出现 /dev/ttyRPMSG0, NS announce 即通知 Linux */
-  if ((VIRT_UART_Init(&s_vuart) == VIRT_UART_OK) &&
-      (VIRT_UART_RegisterCallback(&s_vuart, VIRT_UART_RXCPLT_CB_ID,
-                                  vuart_rx_cb) == VIRT_UART_OK))
-  {
-    g_rpmsg_bridge_mon.vuart_ready = 1u;
-  }
-  /* 初始化失败不挂死: 任务继续空转(状态可见), CAN 业务不受影响 */
-
+  /* "rpmsg-tty" 端点: OPENAMP 框架已由 main.c 的 MX_IPCC_Init + MX_OPENAMP_Init 就绪,
+     这里延时首试+失败自动重试(头文件宏), 成功后 A7 侧出现 /dev/ttyRPMSG0。
+     失败不挂死: 结果见 mon.vuart_ready/vuart_init_rc/attempts, CAN 业务不受影响。 */
+  s_last_init_tick = 0u;
   s_last_hb_tick = osKernelGetTickCount();
   s_last_chk_tick = s_last_hb_tick;
 
   for (;;)
   {
     uint32_t now = osKernelGetTickCount();
+
+    /* ---- "rpmsg-tty" 端点创建(延时 + 失败重试) ---- */
+    if ((g_rpmsg_bridge_mon.vuart_ready == 0u) &&
+        (now >= RPMSG_BRIDGE_VUART_INIT_DELAY_MS) &&
+        ((now - s_last_init_tick) >= RPMSG_BRIDGE_VUART_INIT_RETRY_MS))
+    {
+      VIRT_UART_StatusTypeDef rc;
+      uint8_t r;
+      s_last_init_tick = now;
+      g_rpmsg_bridge_mon.vuart_init_attempts++;
+      rc = VIRT_UART_Init(&s_vuart);
+      r = (rc == VIRT_UART_OK) ? 0u : (uint8_t)rc;
+      if ((rc == VIRT_UART_OK) &&
+          (VIRT_UART_RegisterCallback(&s_vuart, VIRT_UART_RXCPLT_CB_ID,
+                                      vuart_rx_cb) != VIRT_UART_OK))
+      {
+        r = (uint8_t)VIRT_UART_ERROR;                         /* Init OK 但回调注册失败 */
+      }
+      g_rpmsg_bridge_mon.vuart_init_rc = r;
+      if (r == 0u)
+      {
+        g_rpmsg_bridge_mon.vuart_ready = 1u;
+      }
+    }
 
     /* ---- RX: OpenAMP 轮询(回调 memcpy 到静态缓冲) + 拆帧分发 ---- */
     OPENAMP_check_for_message();

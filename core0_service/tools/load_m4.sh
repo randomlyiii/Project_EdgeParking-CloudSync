@@ -43,11 +43,25 @@ do_status() {
 wait_dev() {
     i=0
     while [ $i -lt 50 ]; do
+        bind_channel
         [ -e "$DEV" ] && return 0
         i=$((i + 1))
         sleep 0.2
     done
     return 1
+}
+
+# 5.4 BSP: 远端 NS 建出的 rpmsg-tty 通道不会自动绑 rpmsg_tty 驱动
+# (板验 2026-09-10: creating channel 有, 但 /dev/ttyRPMSG0 需手动 bind 才出现)。
+# ⚠️ 直接 bind 会报 "No such device"(5.4 rpmsg 总线 id 匹配 bug)——
+#    必须先写 driver_override 再 bind(实测有效)。已绑/无通道则无事可做, 幂等。
+bind_channel() {
+    for d in /sys/bus/rpmsg/devices/*rpmsg-tty*; do
+        [ -e "$d" ] || continue
+        [ -e "$d/driver" ] && continue
+        echo rpmsg_tty > "$d/driver_override" 2>/dev/null
+        echo "${d##*/}" > /sys/bus/rpmsg/drivers/rpmsg_tty/bind 2>/dev/null
+    done
 }
 
 case "$1" in
@@ -62,6 +76,8 @@ case "$1" in
             echo stop > "$RP/state" 2>/dev/null
             sleep 1
         fi
+        # 指定固件名: 内核默认按 DT firmware-name(rproc-m4-fw) 找, 不写会 -2 失败
+        echo "$(basename "$FW")" > "$RP/firmware" 2>/dev/null
         echo start > "$RP/state" 2>/dev/null || {
             echo "remoteproc start 失败（$RP 是否存在？dmesg 查原因）" >&2
             exit 1

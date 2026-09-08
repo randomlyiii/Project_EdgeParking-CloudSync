@@ -47,7 +47,14 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* 第3步 RPMSG 网关任务句柄/属性(必须放 USER CODE 区, CubeMX regen 不覆盖;
+   创建调用在 MX_FREERTOS_Init 的 RTOS_THREADS USER CODE 区) */
+osThreadId_t Rpmsg_TaskHandle;
+const osThreadAttr_t Rpmsg_Task_attributes = {
+  .name = "Rpmsg_Task",
+  .stack_size = RPMSG_BRIDGE_TASK_STACK * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -61,13 +68,6 @@ osThreadId_t CAN_Rx_TaskHandle;
 const osThreadAttr_t CAN_Rx_Task_attributes = {
   .name = "CAN_Rx_Task",
   .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for Rpmsg_Task(RPMSG 网关, 第3步; 栈尺寸见 rpmsg_bridge.h) */
-osThreadId_t Rpmsg_TaskHandle;
-const osThreadAttr_t Rpmsg_Task_attributes = {
-  .name = "Rpmsg_Task",
-  .stack_size = RPMSG_BRIDGE_TASK_STACK * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
