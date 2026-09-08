@@ -17,6 +17,8 @@
 #ifndef __GATE_H__
 #define __GATE_H__
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
