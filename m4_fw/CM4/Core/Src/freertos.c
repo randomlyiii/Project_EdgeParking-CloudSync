@@ -36,10 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* ⚠️ 调试心跳灯(联调用): defaultTask 每 N ms 翻转底板 LED_GREEN(PA10, 低电平亮)
-   = 1Hz 闪烁, 是"固件在跑"的直接证据。引脚来自 100ASK 官方 01_LED 例程。
-   置 0 关闭; 接 RPMSG 主链路后建议置 0。 */
-#define DBG_LED_HEARTBEAT_MS 500u
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -129,10 +126,13 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-#if (DBG_LED_HEARTBEAT_MS > 0u)
+  /* 业务指示灯(底板 LED_GREEN=PA10, 低电平亮):
+     C8T6 在线(g_can_master_mon.online, CANRxTask 维护) → 1Hz 心跳(固件活+链路通);
+     离线(3s 无 0x210 心跳) → ~5Hz 快闪告警。
+     引脚出自 100ASK 官方 01_LED 例程。 */
   GPIO_InitTypeDef gpio = {0};
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  gpio.Pin   = GPIO_PIN_10;            /* LED_GREEN, 低电平亮 */
+  gpio.Pin   = GPIO_PIN_10;
   gpio.Mode  = GPIO_MODE_OUTPUT_PP;
   gpio.Pull  = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_LOW;
@@ -140,18 +140,12 @@ void StartDefaultTask(void *argument)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);   /* 先灭 */
 
   /* Infinite loop */
-  for(;;)
+  for (;;)
   {
+    uint8_t online = g_can_master_mon.online;
     HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_10);
-    osDelay(DBG_LED_HEARTBEAT_MS);
+    osDelay(online ? 500u : 100u);   /* 在线 1Hz 心跳; 离线 5Hz 快闪 */
   }
-#else
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-#endif
   /* USER CODE END StartDefaultTask */
 }
 
