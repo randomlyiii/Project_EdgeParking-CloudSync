@@ -69,7 +69,7 @@
 - ts 语义：K210 上电毫秒计数（utime.ticks_ms），非墙钟。
 - 字符集：plate 为 UTF-8（省份简称汉字 + 字母 + 数字）；Core1 校验口径见 PhaseMd/06 P5-11（`RECOG_CONF_TH` 初值 0.60，第7步联动云兜底）。
 
-## 3. RPMSG（M4 ↔ Core0）—— 已实现（Linux 侧代码落地，2026-09-07 拷入；M4 侧实现中）
+## 3. RPMSG（M4 ↔ Core0）—— 已实现（Linux 侧代码落地 2026-09-07 拷入；M4 网关 `m4_fw` rpmsg_bridge 代码就绪 2026-09-10，待 CubeMX 勾 OPENAMP Regenerate + 板验，见 `m4_fw/rpmsg.md`）
 
 > 注：本文件 §3 对应母本 `PhaseMd/10` 的 §2（两文档章节号不同，以内容名为准）。
 

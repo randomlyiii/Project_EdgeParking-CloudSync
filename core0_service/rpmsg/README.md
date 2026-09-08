@@ -1,6 +1,6 @@
 # core0_service/rpmsg — Linux(Core0) ↔ M4 RPMSG 通讯模块（第3步）
 
-> 对端：M4（OpenAMP/RPMSG 从端，FreeRTOS，工程在 `m4_fw/`）。协议权威定义：`docs/protocols.md` §3（母本 `PhaseMd/10` §2）。本模块把 A7 侧任务 P3-06~P3-11 落成代码，**待板端编译联调**。
+> 对端：M4（OpenAMP/RPMSG 从端，FreeRTOS，工程在 `m4_fw/`）。协议权威定义：`docs/protocols.md` §3（母本 `PhaseMd/10` §2）。本模块把 A7 侧任务 P3-06~P3-11 落成代码，**待板端编译联调**；M4 侧网关 `m4_fw/CM4/Core/{Inc,Src}/rpmsg_bridge.{c,h}`（Rpmsg_Task）代码就绪 2026-09-10，用户 CubeMX 勾 OPENAMP Regenerate 后即可编译联调（流程/验收见 `m4_fw/rpmsg.md`）；`tools/load_m4.sh` 已内置 start 前幂等释放 FDCAN2（can0 down + unbind 4400f000.can）。
 
 ## 文件地图
 
