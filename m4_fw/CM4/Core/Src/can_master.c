@@ -84,6 +84,34 @@ uint8_t CAN_Master_SendCmd(uint8_t cmd)
   return 1u;
 }
 
+/* 回 0x110 事件确认帧(在 CAN_Master_Poll 收到 C8T6 的 0x200 后自动调用):
+   d[0]=回显 0x200 的 d[0] 事件码(0x01 遮光/车到位 / 0x00 恢复), 其余字节 0。
+   C8T6 侧据此在 OLED 行4 显示确认标识(见 c8t6/freertos.c)。 */
+uint8_t CAN_Master_SendAck(uint8_t ev)
+{
+  FDCAN_TxHeaderTypeDef tx;
+  uint8_t data[8];
+  HAL_StatusTypeDef st;
+
+  memset(&tx, 0, sizeof(tx));
+  memset(data, 0, sizeof(data));
+  tx.Identifier  = CAN_MASTER_ACK_ID;
+  tx.IdType      = FDCAN_STANDARD_ID;
+  tx.TxFrameType = FDCAN_DATA_FRAME;
+  tx.DataLength  = FDCAN_DLC_BYTES_8;   /* 经典 CAN 数据帧 DLC=8 */
+  tx.FDFormat    = FDCAN_CLASSIC_CAN;
+  data[0] = ev;
+
+  st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &tx, data);
+  if (st == HAL_OK)
+  {
+    g_can_master_mon.tx_ok_count++;
+    return 0u;
+  }
+  g_can_master_mon.tx_err_count++;
+  return 1u;
+}
+
 void CAN_Master_RequestCmd(uint8_t cmd)
 {
   g_can_master_cmd_value   = cmd;
@@ -143,6 +171,7 @@ void CAN_Master_Poll(void)
         g_can_master_mon.slave_status = data[4];
         g_can_master_mon.last_ev_tick = now;
         g_can_master_mon.ev_count++;
+        (void)CAN_Master_SendAck(data[0]);   /* 事件确认 0x110 回执(回显事件码) */
         break;
       case CAN_MASTER_HB_ID:    /* 0x210 心跳: status/uptime */
         g_can_master_mon.slave_status = data[0];

@@ -26,8 +26,10 @@ extern "C" {
 
 #include "main.h"
 
-/* ---------- 帧 ID(与 c8t6/can.md §4 一致) ---------- */
+/* ---------- 帧 ID(与 c8t6/can.md §4、docs/protocols.md §1 一致) ---------- */
 #define CAN_MASTER_CMD_ID   0x100u   /* 主→从 指令 */
+#define CAN_MASTER_ACK_ID   0x110u   /* 主→从 事件确认: 收到 C8T6 的 0x200 后自动回执,
+                                        d[0]=回显 0x200 的 d[0](0x01 遮光/0x00 恢复) */
 #define CAN_MASTER_EVT_ID   0x200u   /* 从→主 事件 */
 #define CAN_MASTER_HB_ID    0x210u   /* 从→主 心跳 */
 
@@ -80,6 +82,9 @@ void CAN_Master_Poll(void);
 
 /* 立即发送一帧 0x100 指令(任务上下文)。返回 0=已入 TX FIFO, 1=失败 */
 uint8_t CAN_Master_SendCmd(uint8_t cmd);
+
+/* 收到 0x200 后自动回一帧 0x110 事件确认(任务上下文)。返回 0=已入 TX FIFO, 1=失败 */
+uint8_t CAN_Master_SendAck(uint8_t ev);
 
 /* 置"待发指令"标志(单次), 由下一次 CAN_Master_Poll 统一发送。
    供调试器 live watch / 后续 RPMSG 任务使用, 无需直接占用 CAN。 */
