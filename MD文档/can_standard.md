@@ -5,6 +5,7 @@
 > 2026-09-06 修正: §7 文档引用 `oled_standard_SPI.md` → `oled_standard.md`（源文件已改名，余无改动）  
 > 2026-09-06 增补: §3.8「FreeRTOS 下 CAN ISR 铁律（ISR 最小化原则）」（同日修订：阻塞改"非必要不可阻塞"；明确 ISR 内禁用 take 类函数）
 > 2026-09-08 增补: §7 停车场 Demo 落地记录（C8T6 从站 ↔ STM32MP157 M4 主站，真机联调已通）——FDCAN 双环境时钟 / A7↔M4 独占移交 / 单发不重传两端语义符号差异 / F1 CAN_ESR 位段勘误 / 收尾模板（原 §7 相关文档顺延为 §8）
+> 2026-09-10 更正: §7 中"A7 释放 can0 = down + unbind 4400f000.can" 结论**作废**——实测 unbind 会让内核 clk 框架关闭 fdcan_k 时钟，M4 的 HAL_FDCAN_Init 无时钟卡死（FDCAN2 NBTP 恒复位值、CAN 全聋）。正确做法：m_can 保持绑定 + `can0 up`(500k) 点亮时钟，A7 静听不发（详见 AGENTS.md G3 条 / MD文档/a7-m4_standard.md §4.6）。
 
 ---
 

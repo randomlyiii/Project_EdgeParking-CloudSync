@@ -77,7 +77,7 @@
 
 ## 五、git / 环境 / 工具备忘
 - git 在 `C:\Program Files\Git\cmd\git.exe`（不在 PATH）。远程 `https://github.com/randomlyiii/Project_EdgeParking-CloudSync.git`，分支 master。
-- **git 现状（2026-09-10）**：`origin/master` 已到 `60d3f72`（用户推送 K210 参考资料更新）；**本地领先 3 个提交未推**：`8ba7f85`(feat m4_fw/rpmsg) / `49519ee`(docs: m4_fw/rpmsg.md+状态行) / AGENTS 本次记忆提交。沙箱无 GitHub 推送凭据，推送需用户在本地终端执行。旧记录"回退到 73c557a/init、origin=8a63ae2、push --force"已过时作废。
+- **git 现状（2026-09-10 收工）**：`origin/master` 已到 `ab94d02`（用户已推 RPMSG 打通提交）；**本地仅领先 1 个未推**：`fec97e4`(G3 全链路/CAN 时钟根因/OpenAMP 移入任务) + 本次记忆提交。沙箱无 GitHub 推送凭据，推送需用户在本地终端执行。
 - 框架目录（`k210_fw`、`m4_fw`、`core0_service`、`core1_ui`、`docs`、`deploy`）均为**未跟踪新目录**，空叶子有 `.gitkeep`；`.gitignore` 已被用户改过。
 - 参考资料：`E:\download\100ASK-MP157\100ask-mp157原理图\01_Base_board(底板)\`（原理图 pdf + `.DSN` + `.brd`）。**`.DSN` 可用 grep 搜明文网表/备注；两个 PDF 文字被压缩、且本环境无 PDF 渲染/转换工具**（`pwsh` 读 E: 二进制被沙箱挡、curl schannel 拉不下来 poppler）。
 - 清理脚本 `cubekill.bat`（`c8t6/` 与 `m4_fw/` 各一份，内容相同）：通用 CubeMX/CubeIDE 产物清理。用法 `cubekill.bat [目标目录]` 或双击清脚本所在目录；递归识别构建目录——含 `objects.list`/`CMakeCache.txt` 标记，或名为 Debug/Release/build 且真有 `*.o/*.mk/makefile` 才删；另清 `*.bak/*.tmp`。不碰 `.ioc/.project/.cproject/.settings/Core/Drivers/Middlewares/*.ld`。已在仿真目录验证（嵌套 `CM4/Debug` 删、无产物的 `Release` 留）。m4_fw 的构建产物在 `CM4/Debug/`。
@@ -87,7 +87,7 @@
 ## 六、下一步建议（优先级）
 1. **K210 线（2026-09-07 收工点：链路已验证打通）**：状态 = K210 单文件 `main.py`（LINK="console"，base64 文本传图）驻板内 flash 自启 ✅、K210 板载屏 QVGA 画面干净 ✅、MP157 端 `k210_preview_rx_text.py` 收帧重组成功 ✅（"成了"）、git 已提交 `0fefcdd`。**挂起项**：① MP157 LCD 显示未做——板子**无 fbi 也无 apt-get**，先跳过，正式展示等 Qt 阶段(core1_ui)；② 文本通道 ~1s/帧偏慢，快速二进制流需 2~3 根杜邦线走 MP157 ttySTM1（架构主线，用 docs/protocols.md §2 帧）；③ K210 flash 里若需改回可连 IDE 的版本，把 main.py 改 LINK="uart" 或临时删除。下次续作从 `core1_ui/k210_link/` 与 `k210_fw/main.py` 入手。
 2. **✅ M4↔C8T6 联调已通（2026-09-08 起；09-09 又完成设计功能升级并本地提交，见四·C8T6 条）**：A7 直连先通（can0=FDCAN2），随后 M4 侧修正（单发不重传 + **Autotune 实测时钟自动换算 500k** + 工程模式 PLL3Q 恢复 + 清 FDCAN1 残留注释）+ "A7 释放流程"（can0 down + unbind `4400f000.can`）后 M4↔C8T6 双向打通（0x100/0x110/0x200/0x210 全闭环，0x110 确认 OLED `CAN:Sended` 真机验证通过）。遗留：① （可选）读 `g_fdcan_meas_hz` 固化 100M/62.5M 实测记录；② ✅ 调试宏已处理（09-09：自动开闸宏=0、LED 心跳改业务指示）；③ 第3步 RPMSG 接 OpenAMP endpoint——**进行中，见下条**。
-3. **🟨 第3步 Linux↔M4 RPMSG（2026-09-10 代码收尾）**：A7 侧 core0_service 全就绪待板验；M4 侧代码写了 5 个文件（协议副本×3 + rpmsg_bridge.{h,c}）后**已完成并提交**（见「四·M4 侧 RPMSG 网关」小节）。**下一步 = 用户 CubeMX 勾 Middleware→OPENAMP Regenerate → 编译（bridge `__has_include` 哨兵解除）→ 板端联调 G3（`m4_fw/rpmsg.md` §5 验收）**。
+3. **✅ 第3步 Linux↔M4 RPMSG 已通（2026-09-10 G3 全链路验收通过，见四·M4 RPMSG 小节）**：RPMSG 双向(ttyRPMSG0/0x23/0x7E) + 0x11/0x12→CAN→C8T6 闸门闭环 + 重启 flaky 根因根治（can0 释放方式/OpenAMP 位置）。**下次续**：① C8T6 在手时补测手遮→0x21 与断链 0x22（G3 最后几项）；② 正式版 M4 重编（宏已置 0，当前板端还是验证版）；③ core0_service C demo 交叉编译方案（板端无 make/gcc）；全勾 G3 后进入第4步 Linux 本地业务。
 4. C8T6 侧 CAN 已全闭环（心跳/查询/遮光事件/0x110 确认）；**SG90 已挂载（09-09 设计功能，待真机自检+联调动作验证）**；BH1750 物理验收 + 遮光阈值现场微调见 `c8t6/can.md` §7。
-5. M4↔C8T6 稳定联调（500k/120Ω/共地已通）；待第3步把"车到位"经 RPMSG 接入 A7 业务（车牌→开闸）。
-6. git：本地领先 3 个提交未推（RPMSG 网关 8ba7f85/49519ee + 记忆），推送由用户在本地终端执行（见五·git 现状）。
+5. M4↔C8T6 稳定联调（500k/120Ω/共地已通）；第3步 RPMSG 已接入 A7 业务（0x11/0x12 闭环），下一环节 = 把"车到位→车牌→开闸"业务逻辑接到 A7。
+6. git：origin 已到 ab94d02；本地待推 = fec97e4 + 本次记忆/文档提交（见五·git 现状），推送由用户在本地终端执行。

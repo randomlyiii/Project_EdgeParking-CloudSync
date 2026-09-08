@@ -2,8 +2,9 @@
 
 > 对端：A7-Linux `core0_service/rpmsg/`（协议权威定义 `docs/protocols.md` §3，母本 PhaseMd/10 §2）。
 > M4 角色 = **CAN↔RPMSG 网关**：A7 的 0x11/0x12/0x13 下行 → CAN 0x100；C8T6 的 0x200/0x210
-> 上行 → 0x21/0x22 转发 A7；状态查询 0x13 → 0x23。进度：**代码就绪（2026-09-10），
-> 待 CubeMX 勾 OPENAMP Regenerate 后可编译；板端联调待做**（验收门 G3）。
+> 上行 → 0x21/0x22 转发 A7；状态查询 0x13 → 0x23。进度：**板端 G3 全链路验收通过（2026-09-10）**——
+> RPMSG 双向(ttyRPMSG0/0x23/0x7E) + 0x11/0x12 → CAN 0x100 → C8T6 闸门 OPEN/CLOSE 真机闭环；
+> 重大根因修正见 §4 注与 AGENTS（can0 释放方式/OpenAMP 初始化位置）。
 
 ## 1. 文件地图（M4 侧）
 
@@ -13,7 +14,7 @@
 | `CM4/Core/{Inc,Src}/rpmsg_proto.{h,c}` | CRC16-XMODEM、组帧、增量拆帧状态机（粘包/坏帧重同步/seq） | 同上，A7 拷贝副本（含 decode 死代码便于两端 diff） |
 | `CM4/Core/{Inc,Src}/rpmsg_bridge.{h,c}` | **网关桥业务**：`Rpmsg_Task`（OpenAMP 单任务模型）+ 事件队列 + 心跳/0x22/0x23 + Bus_Off 恢复 | 手写，独立于 CubeMX regen（放 Core/，生成物不覆盖） |
 | `CM4/OPENAMP/`（CubeMX 生成） | openamp.{c,h} / openamp_conf.h / rsc_table.{c,h} / mbox_ipcc.{c,h} / openamp_log.{c,h} | 勾选 Middleware→OPENAMP 后 Regenerate 生成，**勿手改** |
-| `tools/load_m4.sh`（A7 侧） | remoteproc start/stop/status + 等 `/dev/ttyRPMSG0`；**start 前幂等释放 FDCAN2** | core0_service/tools/ |
+| `tools/load_m4.sh`（A7 侧） | remoteproc start/stop/status + 等 `/dev/ttyRPMSG0`；**start 前 ensure_can_clock（can0 up 点亮 fdcan_k）+ 自动 override+bind rpmsg_tty** | core0_service/tools/ |
 
 ## 2. CubeMX 步骤（用户操作，一次性）
 
@@ -51,34 +52,32 @@ libmetal\lib, virtual_driver\virt_uart.c, mw_if\...}`，参考 100ASK 例程
 ## 4. 板端流程（A7 侧，用户执行）
 
 ```sh
-# 1) 加载 M4（脚本已含 FDCAN2 释放：can0 down + unbind 4400f000.can）
+# 1) 加载 M4（新版 load_m4.sh 自动: ensure_can_clock = m_can 保持绑定 + can0 up(500k)
+#    点亮 fdcan_k 时钟(A7 静听不发, 勿 unbind——会关时钟致 M4 FDCAN 初始化卡死) + 等 channel
+#    + driver_override+bind rpmsg_tty -> /dev/ttyRPMSG0)
 cp <构建的 m4_fw.elf> /lib/firmware/m4_fw.elf
 sudo ./core0_service/tools/load_m4.sh start     # 等到 /dev/ttyRPMSG0
 
-# 2) 编译并跑 A7 demo（收到 M4 0x7E 心跳/应答）
-cd core0_service && make
-sudo ./rpmsg_demo          # q=查询(→0x23) o/c=开/关闸(端到端到 SG90)
-
-# 3) 坏帧/断链/长稳（P3-07）
-sudo ./tools/rpmsg_cli/rpmsg_cli    # bad 21 注入坏 CRC → 计数、链路不崩
+# 2) 板端无 make/gcc -> 验收用 python3 heredoc(0x13 查询/0x7E 心跳/0x11/0x12 开关节),
+#    正式 A7 服务待交叉编译(core0_service/rpmsg C 代码)
 ```
 
 **首次启动主要风险点**：内核 CONFIG_RPMSG_TTY（→ /dev/ttyRPMSG0）、remoteproc 支持、
 vring 保留内存（`ls /proc/device-tree/reserved-memory/` 找 vdev0vring0/1+vdev0buffer）；
 缺则 dmesg + `/proc/config.gz` 排查（PhaseMd/13 链条），必要时设备树覆盖。
 
-## 5. 验收（G3 摘要）
+## 5. 验收（G3 摘要；2026-09-10 状态）
 
-- `q` → 0x23 打印 gate/node_online/can_err；`o`/`c` → SG90 实际动作；
-- 手遮 BH1750 → 0x21 ev/lux/drop 上行、C8T6 OLED `CAN:Sended`（0x110 不回归）；
-- 断链：remoteproc stop → A7 ≤1s LINK DOWN；start → 自动重连 + 0x13 → 0x23；
-- C8T6 断电 ≤3s → 0x22 离线；恢复 → 0x22 在线；
-- `rpmsg_cli bad` 坏 CRC 注入不崩；10 分钟 soak 零丢计数 → 勾 G3。
+- [x] ttyRPMSG0 出现，0x13→0x23、0x7E 心跳、CRC 0 错（python3 验收，两次全通）
+- [x] 0x11/0x12 → CAN 0x100 → C8T6 闸门 OPEN/CLOSE 真机闭环（OLED 行3 翻转；SG90 舵机本体未挂）
+- [ ] 手遮 BH1750 → 0x21 ev/lux/drop 上行、C8T6 OLED `CAN:Sended`（0x110 不回归）——C8T6 在场补测
+- [ ] 断链：remoteproc stop → A7 ≤1s LINK DOWN；start → 自动重连 + 0x13 → 0x23
+- [ ] C8T6 断电 ≤3s → 0x22 离线；恢复 → 0x22 在线
+- [ ] `rpmsg_cli bad` 坏 CRC 注入不崩；10 分钟 soak 零丢计数 → 勾 G3（需交叉编译 C 工具）
 
 ## 6. 同步纪律 / 备注
 
 - 协议改：母本 PhaseMd/10 §2 → `docs/protocols.md` §3 → A7 原件 → M4 副本 → 两处变更记录。
 - regen 安全：rpmsg_types/proto/bridge 放 `Core/`，CubeMX 生成物放 `CM4/OPENAMP/`，互不覆盖；
   bridge 用 `__has_include("openamp.h")` 做生成哨兵（未生成编译即失败提示）。
-- M4 持 FDCAN2 期间 A7 不得用 can0（load_m4.sh 已固化释放）；A7 要收回 can0 需 rebind/重启。
-- 板端粘贴脚本保持纯 ASCII（用户既定规范）；仓库 .c/.md 不受限。
+- **2026-09-10 更正**：M4 持 FDCAN2 期间 A7 **可以也不得**用 can0——m_can 保持绑定 + can0 up(500k) 只监听不发（点亮 fdcan_k 时钟是 M4 FDCAN 初始化前提）；**切勿 unbind**（关时钟 → M4 HAL_FDCAN_Init 卡死、CAN 全聋，见 AGENTS G3 条）。板端粘贴脚本保持纯 ASCII（用户既定规范）；仓库 .c/.md 不受限。
