@@ -18,6 +18,7 @@
 - **道闸模拟**：SG90（PWM，50Hz），由下位机控制。
 - **⭐ 最新决策（本会话尾段）**：**BH1750 + SG90 交给下位机 STM32F103C8T6（FreeRTOS）控制**；C8T6 通过 **CAN** 与 MP157 通信；**MP157 M4 只接收 CAN 帧**（收 C8T6 的"车到位/光强/状态"上报），业务判定（车牌→开闸）在 M4。即 MP157(M4,FDCAN1→板上TJA1042) → CANH/CANL ↔ C8T6(TJA1050) → BH1750(I2C)/SG90(PWM)。CAN 用**经典 CAN 2.0 + 500kbps**（F103 无 CAN-FD），总线两端各 120Ω、共地。
 - OLED 状态屏（M4 调试用）：板上 PF14/PF15 已被 AP3216C 占用且不可达，改用**Camera&Extend 口空闲 GPIO + 软件 I2C(bit‑bang)**（或挂到 C8T6 节点 I2C）。
+- **⭐ 网络决策（2026-09-09）**：上位机（Modbus-TCP）与云端（DeepSeek 兜底 / 云上报 MQTT）网络链路**单用板载 WiFi（RL-UM02WBS-8723BU），不用以太网**。README 硬件清单、Task 任务1.2/通道矩阵5和7/阶段4 MQTT over WiFi/约束"网络单链路（仅 WiFi）"、PhaseMd/01 P0-02 已同步。断网时本地业务闭环照常（云兜底/云上报按各自降级策略处理）。
 
 ## 三、板级事实（从原理图 .DSN 挖出；PDF 文字被压缩无法直接提取）
 - 板上**已占用/只有这些 I2C**：I2C1=AP3216C 光感/接近 + ICM-20608 加速度；触摸 I2C（TP_SCL/TP_SDA）在 LCD 排线口（相关 PE 引脚 TP_INT/TP_RST）；**I2C4/I2C6 只能 A7**，I2C1/2/3/5 可给 M4。
