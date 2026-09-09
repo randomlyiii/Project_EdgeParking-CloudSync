@@ -1,0 +1,28 @@
+[Unit]
+Description=EdgeParking park_ui (Qt 5.12.8 linuxfb) - parking lot UI
+# Boot must land on our UI, not the vendor desktop. mxapp2 (eglfs, holds the
+# DRM master / draws the "default page") is killed in ExecStartPre before the
+# linuxfb app opens fb0; keep restarting on crash.
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+# vendor desktop cleanup: eglfs must release DRM before linuxfb can own fb0.
+# Match plain "mxapp2" (argv[0] may lack the /usr/bin prefix) and SIGKILL;
+# retry a while in case it respawns. Harmless when absent.
+ExecStartPre=/bin/sh -c 'i=0; while pgrep -f "mxapp2" >/dev/null 2>&1 && [ $i -lt 20 ]; do pkill -9 -f "mxapp2" 2>/dev/null || true; i=$((i+1)); sleep 0.5; done; true'
+Environment=QT_QPA_PLATFORM=linuxfb:nocursor=1
+Environment=QT_QPA_FONTDIR=/usr/share/fonts
+Environment=LD_LIBRARY_PATH=/usr/lib
+EnvironmentFile=-/etc/park-ui.env
+# demo off: /park_shm (Core0) absent -> show real K210 feed, no fake data.
+# Once Core0 publishes the shm the app switches to live state on its own.
+ExecStart=/opt/park_ui/park_ui --mode auto --demo off
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

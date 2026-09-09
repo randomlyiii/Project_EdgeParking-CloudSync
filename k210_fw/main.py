@@ -30,7 +30,7 @@ PREVIEW_CHUNK = 900
 CAM_W, CAM_H = 320, 240   # QVGA（=LCD 原生尺寸；帧率优先可临时改 160,120）
 JPEG_HW = False           # 硬件 JPEG 本固件不支持（实测报错），保持 False 走软件压缩
 JPEG_QUALITY = 70         # 软件压缩质量；QVGA 下约 15~40KB/帧（QQVGA 下 3~6KB）
-LCD_PREVIEW = True        # 板载屏本地预览（helloworld 同款：QVGA 满屏显示）
+LCD_PREVIEW = False        # 板载屏本地预览（helloworld 同款：QVGA 满屏显示）
 # ⚠️ 实测(2026-09-07)：本固件 USB 只走 console(print) 文本；machine.UART 二进制帧到不了 USB。
 # LINK="console"=走 console 打印 base64 文本行（零线、必通、较慢，QVGA 约 0.5~1s/帧）；
 # LINK="uart"=板级串口 UART_ID（预留，需杜邦线）。

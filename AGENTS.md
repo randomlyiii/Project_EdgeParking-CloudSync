@@ -6,7 +6,7 @@
 - 100ASK-MP157（STM32MP157DACx）+ 外接 K210 的停车场**端侧AI·边云协同**Demo，Linux(双A7 SMP)+FreeRTOS(M4)，M4 跑 OpenAMP/RPMSG。
 - `README.md`=项目定位/分工一览/硬件清单/目录树/构建；`Task.md`=系统架构/任务拆解/数据交互/约束/KPI（内容隔离，勿重复）。
 - 字段级协议（A7↔M4 帧、A7↔K210 串口、CAN 帧、共享结构体）统一归 `docs/protocols.md`（**2026-09-07 已建**：CAN §1 / K210 UART §2 / RPMSG §3 已拷入，其余通道随实现拷入；草案母本 `PhaseMd/10_协议规格总表`，改协议先改母本→同步本文件→改代码→两处变更记录）。
-- `PhaseMd/`（2026-09-06 建）= **执行层任务分解，14 份 md**，按用户定稿的 8 步串行主线组织：①下位机C8T6本地 → ②M4↔下位机CAN → ③Linux↔M4 RPMSG → ④Linux本地业务 → ⑤K210↔Linux → ⑥本地业务联通 → ⑦Linux↔云端 → ⑧全业务跑通；另有第0步环境 + 支撑文档（协议总表/Qt规格/KPI用例/排障手册）。任务编号 `P<步>-<序号>`，每步有验收门 G0~G8；进度推进时同步勾选并更新本文件。
+- `PhaseMd/`（2026-09-06 建）= **执行层任务分解，15 份 md**，按用户定稿的 8 步串行主线组织：①下位机C8T6本地 → ②M4↔下位机CAN → ③Linux↔M4 RPMSG → ④Linux本地业务 → ⑤K210↔Linux → ⑥本地业务联通 → ⑦Linux↔云端 → ⑧全业务跑通；另有第0步环境 + 支撑文档（协议总表/Qt规格/KPI用例/排障手册）+ **14_GitHub现成项目调研**（2026-09-09 建，剩余功能↔现成开源项目映射）。任务编号 `P<步>-<序号>`，每步有验收门 G0~G8；进度推进时同步勾选并更新本文件。
 
 ## 二、当前确定架构（重要，含最新变更）
 - **车牌识别**：外接 K210（自带摄像头+KPU）替代 A7 本地 TFLite；接 A7-Linux UART（先 UART 后可选 SPI）。K210 固件**预览流常开**（与推理解耦），**"抓拍识别"指令触发**推理；置信度不足调 DeepSeek Vision 兜底。V4L2 摄像头已删除。
@@ -92,3 +92,13 @@
 4. C8T6 侧 CAN 已全闭环（心跳/查询/遮光事件/0x110 确认）；**SG90 已挂载（09-09 设计功能，待真机自检+联调动作验证）**；BH1750 物理验收 + 遮光阈值现场微调见 `c8t6/can.md` §7。
 5. M4↔C8T6 稳定联调（500k/120Ω/共地已通）；第3步 RPMSG 已接入 A7 业务（0x11/0x12 闭环），下一环节 = 把"车到位→车牌→开闸"业务逻辑接到 A7。
 6. git：origin 已到 ab94d02；本地待推 = fec97e4 + 本次记忆/文档提交（见五·git 现状），推送由用户在本地终端执行。
+
+## 七、Qt GUI 2026-09-09 状态（当前收工点）
+- **✅ Qt GUI 已用板端匹配版本编译成功**：`core1_ui/qt_gui/bin/park_ui` 已在 PC Linux 上生成 ARM 32-bit ELF；不能使用 OpenSTLinux SDK 的 Qt 5.14.1 编译，否则板端 Qt 5.12.8 启动时报 `QtPrivate::argToQString ... version Qt_5`。
+- **✅ 正确编译工具链**：使用 `/home/book/100ask_stm32mp157_pro-sdk/ToolChain/arm-buildroot-linux-gnueabihf_sdk-buildroot/bin/qmake`（Qt 5.12.8）和同目录 `arm-buildroot-linux-gnueabihf-g++`；Makefile 曾残留 `/home/book/stm32mp157/ST-Buildroot/output/...` 旧绝对路径，已临时替换为当前 SDK 路径后链接成功。当前 SDK 的 qmake 需要 `local_features/force_asserts.prf` 空文件绕过缺失 feature，且环境变量/qt.conf 处理不当会混入 OpenSTLinux 编译器和 sysroot。
+- **✅ 部署路径已确认**：PC Linux 编译机执行 `scp /home/book/core1_ui/qt_gui/bin/park_ui root@192.168.189.65:/root/park_ui`；板端再 `mkdir -p /opt/park_ui && cp /root/park_ui /opt/park_ui/park_ui && chmod +x /opt/park_ui/park_ui`。此前 `/home/book/park_ui` 不存在导致板端继续运行旧二进制，已修正。
+- **板端 Qt/LCD 事实**：Qt 运行库为 5.12.8；插件目录是 `/usr/lib/qt/plugins/platforms`，不是 `/usr/lib/qt5/plugins/platforms`；目录中有 `libqlinuxfb.so`，`/dev/fb0` 存在，驱动名 `stmdrmfb`，分辨率 `1024x600`、16bpp。推荐环境：`QT_QPA_PLATFORM='linuxfb:fb=/dev/fb0'`、`QT_QPA_PLATFORM_PLUGIN_PATH=/usr/lib/qt/plugins/platforms`、`LD_LIBRARY_PATH=/usr/lib`。
+- **✅ LCD 已由 park_ui 独占常显（2026-09-10 板验，deploy systemd 自启直达）**：开机 → park-ui.service → park_ui linuxfb 全屏常显，重启验证通过。屏霸 = **myir.service**（"myir hmi v2.0"，单元 `/usr/lib/systemd/system/myir.service`，ExecStart=`/bin/sh /usr/bin/start.sh start` → mxapp2 `-platform eglfs` 独占 DRM；**grep "mxapp" 搜不到它——单元文件只写 start.sh**）；禁用法 `systemctl disable --now myir.service`（已固化进 `deploy/systemd/install_park_ui.sh`）；park-ui.service 另有 ExecStartPre `pkill -9 -f "mxapp2"` 兜底（**勿带全路径**——argv[0] 未必含 /usr/bin，曾致杀不掉；且需 -9 防 TERM 免疫）。**1/4 屏** = 板端旧二进制缺 showFullScreen → 用 PC Linux book 重编 `bin/park_ui` scp 至 `/opt/park_ui/park_ui` 即满屏。**K210 预览方向定版（2026-09-10）**：K210 倒装 180° 安装 + Qt `K210_VIEW_VFLIP`（publishJpeg 仅上下翻 `mirrored(false,true)`）= 画面正确；**防伪标记** `g_orientMarker="K210-ORIENT-VFLIP"`（部署验证：`strings /opt/park_ui/park_ui | grep K210-ORIENT`，根治"旧二进制反复"踩坑）；历次翻转试验均因旧 bin 误判，最终以带标记的新 bin 为准。**"黑屏弹车牌"假识别** = demo 模拟器（无 /park_shm 时 `--mode auto` 自动切 demo 造数据）→ 真机 `--demo off --mode text`（park-ui.service ExecStart 已带 `--demo off`）。poweroff 时"闪现 Qt"现象已随 mxapp2 根除（原因为 mxapp2 关机时才被杀、fb0 内容短暂可见）。
+- **deploy 层文件（2026-09-10 建）**：`deploy/systemd/park-ui.service`（linuxfb fb0、ExecStartPre 杀 mxapp2、Restart=always、EnvironmentFile=/etc/park-ui.env）+ `install_park_ui.sh`（装二进制[自动回退 /root/park_ui]/禁用 myir.service/装 unit）+ `deploy/README.md`；`core1_ui/qt_gui/run_board.sh`（手动跑 wrapper）。**deploy 层纯文本免编译**，scp 即用；仅 park_ui 需在编译机 book（Qt 5.12.8 交叉）重编。
+- **K210 运行前提**：真实预览需 K210 `k210_fw/main.py` 已写入 Flash 并自动运行，当前 USB CDC 文本链路使用 `LINK="console"`、板端设备 `/dev/ttyACM0`、Qt 参数 `--mode text --baud 115200`；仅测试 LCD 可用 `--demo on --mode none`，不依赖 K210。
+- **用户问题**：板子linux运行poweroff后，正常显示一会qt页面然后关机了。
