@@ -29,14 +29,19 @@ PREVIEW_CHUNK = 900
 # 软件压缩在 QVGA 下 fps 约 3~5（要更快再临时切 QQVGA 160x120，代价是屏上画面错位/局部）。
 CAM_W, CAM_H = 320, 240   # QVGA（=LCD 原生尺寸；帧率优先可临时改 160,120）
 JPEG_HW = False           # 硬件 JPEG 本固件不支持（实测报错），保持 False 走软件压缩
-JPEG_QUALITY = 70         # 软件压缩质量；QVGA 下约 15~40KB/帧（QQVGA 下 3~6KB）
+JPEG_QUALITY = 55         # 软件压缩质量(2026-09-10: 70→55 压帧长提 console fps; 车牌清晰度够用)
 LCD_PREVIEW = False        # 板载屏本地预览（helloworld 同款：QVGA 满屏显示）
 # ⚠️ 实测(2026-09-07)：本固件 USB 只走 console(print) 文本；machine.UART 二进制帧到不了 USB。
 # LINK="console"=走 console 打印 base64 文本行（零线、必通、较慢，QVGA 约 0.5~1s/帧）；
 # LINK="uart"=板级串口 UART_ID（预留，需杜邦线）。
 LINK = "console"
-CONSOLE_CHUNK = 600       # console 模式：每行 base64 字符数
-CONSOLE_PACE_MS = 40      # 每行间延时：115200 下 600B 约需 55ms 发送，保守取 40ms+（丢行就调大）
+CONSOLE_CHUNK = 900       # console 模式：每行 base64 字符数(2026-09-10: 600→900 减行数提fps)
+CONSOLE_PACE_MS = 25      # 每行间延时(2026-09-10: 40→25; 丢行就调回 40)
+# 无 UART 引出 → 识别改"持续周期识别+console 结果行上行"（不再需要下行 0xC1 触发）：
+RECOG_PERIOD_MS = 3000    # console 模式识别周期(预览流照常, 到点抓一帧识别)
+CONSOLE_FAKE_RESULT = 0   # 置 1 = 无模型期间每周期发假车牌, 用于打通 Qt 弹卡/判定全链路
+CONSOLE_FAKE_PLATE = "粤B12345"
+CONSOLE_FAKE_CONF = 0.95
 
 INFER_MODE = "B"           # A=检测+识别 kmodel；B=仅占位（默认，识别交云兜底）
 KPU_MODEL = "/sd/plate_det.kmodel"   # TODO(路径A)：实际 kmodel 路径
@@ -304,6 +309,7 @@ class App:
         self.stat_frames = 0
         self.stat_jlen = 0
         self.gc_last = utime.ticks_ms()
+        self.recog_last = utime.ticks_ms()
 
     def tx(self, type_, payload=b""):
         seq = self._seqs.get(type_, 0)
@@ -351,6 +357,29 @@ class App:
             utime.sleep_ms(CONSOLE_PACE_MS)
         print("K2:END:%d" % len(b64))
 
+    def console_recognize_tick(self):
+        """console 模式周期识别：有模型(INFER_MODE=A)出真结果；无模型时若
+        CONSOLE_FAKE_RESULT=1 发假车牌打通 Qt 弹卡/判定链路。结果行:
+        K2:OK:<json{plate,confidence,ts}>  /  K2:NG:<json{error}>"""
+        if LINK != "console":
+            return
+        if self.busy:
+            return
+        if CONSOLE_FAKE_RESULT:
+            self.tx_type = 0
+            print("K2:OK:%s" % json.dumps(
+                {"plate": CONSOLE_FAKE_PLATE, "confidence": CONSOLE_FAKE_CONF,
+                 "ts": utime.ticks_ms()}))
+            return
+        jpeg = capture_jpeg()
+        if not jpeg:
+            return
+        result = recognize(jpeg)
+        ok, obj = decide(result)
+        if ok:
+            print("K2:OK:%s" % json.dumps(obj))
+        # NG 不发(预览流已在发图; 云兜底/调试需要时再开)
+
     def run(self):
         try:
             cam_init()                      # TODO(实机)：失败可延后重试
@@ -369,6 +398,9 @@ class App:
                         self.console_send_jpeg(jpeg)
                     else:
                         self.preview.send_jpeg(jpeg)
+            if LINK == "console" and utime.ticks_diff(now, self.recog_last) >= RECOG_PERIOD_MS:
+                self.recog_last = now
+                self.console_recognize_tick()
             n = self.uart.any()
             if n:
                 data = self.uart.read(n)

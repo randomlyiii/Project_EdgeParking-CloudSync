@@ -15,15 +15,16 @@
 #include <unistd.h>
 #include <sys/select.h>
 
-/* K210 camera mount orientation fix (2026-09-10 board test, round 4):
- * with a CONFIRMED-fresh 180-turn binary the picture is still horizontal-
- * mirrored only, so the real correction is a SINGLE VERTICAL flip.
+/* K210 camera mount orientation fix (2026-09-10, round 5):
+ * user mounts the K210 UPRIGHT (no physical 180 turn), which flips the raw
+ * frame by 180 vs the previous upside-down mount -> the correction becomes a
+ * HORIZONTAL mirror only (mirrored true,false).
  * g_orientMarker lets you verify which build is deployed:
- *   strings /opt/park_ui/park_ui | grep K210-ORIENT   -> K210-ORIENT-VFLIP
+ *   strings /opt/park_ui/park_ui | grep K210-ORIENT   -> K210-ORIENT-HMIRROR
  * File demo mode is untouched (checked in publishJpeg). Pure ASCII only. */
-#define K210_VIEW_VFLIP 1
-#if defined(K210_VIEW_VFLIP)
-const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-VFLIP";
+#define K210_VIEW_HMIRROR 1
+#if defined(K210_VIEW_HMIRROR)
+const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-HMIRROR";
 #else
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-NONE";
 #endif
@@ -108,12 +109,11 @@ private:
         QImage img;
         if (!img.loadFromData(jpeg, "JPEG") || img.isNull())
             return;
-        /* 2026-09-10 board test (round 4): single vertical flip; a fresh 180
-         * build proved the horizontal axis is already correct. File demo
-         * mode stays unflipped. */
-#if defined(K210_VIEW_VFLIP)
+        /* 2026-09-10 (round 5): K210 mounted upright -> horizontal mirror
+         * only. File demo mode stays unflipped. */
+#if defined(K210_VIEW_HMIRROR)
         if (mode != "file")
-            img = img.mirrored(false, true);
+            img = img.mirrored(true, false);
 #endif
         QMutexLocker lk(&m_mutex);
         m_latest = img;
@@ -382,6 +382,21 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
                 publishJpeg(QByteArray::fromBase64(b64all));
             }
             m_chunks.clear();
+        }
+        else if (line.startsWith("K2:OK:"))
+        { /* continuous-recognition result (console uplink), 0xC2 semantics */
+            const QJsonDocument doc = QJsonDocument::fromJson(
+                line.mid(6).toUtf8());
+            if (doc.isObject())
+            {
+                const QJsonObject o = doc.object();
+                emit recogResult(o.value("plate").toString(),
+                                 o.value("confidence").toDouble(), 0);
+            }
+        }
+        else if (line.startsWith("K2:NG:"))
+        { /* recognition failed (console uplink), 0xC3 semantics */
+            emit recogFailed(line.mid(6).trimmed());
         }
     }
     if (m_lineBuf.size() > 64 * 1024)
