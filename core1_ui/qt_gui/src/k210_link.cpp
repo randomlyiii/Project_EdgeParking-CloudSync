@@ -15,16 +15,21 @@
 #include <unistd.h>
 #include <sys/select.h>
 
-/* K210 camera mount orientation fix (2026-09-10, round 5):
- * user mounts the K210 UPRIGHT (no physical 180 turn), which flips the raw
- * frame by 180 vs the previous upside-down mount -> the correction becomes a
- * HORIZONTAL mirror only (mirrored true,false).
+/* K210 camera mount orientation fix.
+ * 2026-09-11 (measured on the K210 board with ORIENT_PROBE): the RAW sensor
+ * frame is already upright and not mirrored -> ORIENT combo 0 (vflip=0,
+ * hmirror=0) is correct, so the display must NOT transform the frame.
+ * The old round-5 horizontal mirror is therefore OFF by default.
+ * Set K210_VIEW_HMIRROR to 1 only if the preview really looks mirrored
+ * (0 = no transform, 1 = mirrored(true,false), 2 = flipped 180).
  * g_orientMarker lets you verify which build is deployed:
- *   strings /opt/park_ui/park_ui | grep K210-ORIENT   -> K210-ORIENT-HMIRROR
+ *   strings /opt/park_ui/park_ui | grep K210-ORIENT
  * File demo mode is untouched (checked in publishJpeg). Pure ASCII only. */
-#define K210_VIEW_HMIRROR 1
-#if defined(K210_VIEW_HMIRROR)
+#define K210_VIEW_HMIRROR 0
+#if (K210_VIEW_HMIRROR == 1)
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-HMIRROR";
+#elif (K210_VIEW_HMIRROR == 2)
+const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-FLIP180";
 #else
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-NONE";
 #endif
@@ -109,11 +114,14 @@ private:
         QImage img;
         if (!img.loadFromData(jpeg, "JPEG") || img.isNull())
             return;
-        /* 2026-09-10 (round 5): K210 mounted upright -> horizontal mirror
-         * only. File demo mode stays unflipped. */
-#if defined(K210_VIEW_HMIRROR)
+        /* 2026-09-11: raw K210 frame measured correct -> no transform by
+         * default (see K210_VIEW_HMIRROR up top). File demo stays as is. */
+#if (K210_VIEW_HMIRROR == 1)
         if (mode != "file")
             img = img.mirrored(true, false);
+#elif (K210_VIEW_HMIRROR == 2)
+        if (mode != "file")
+            img = img.mirrored(true, true);
 #endif
         QMutexLocker lk(&m_mutex);
         m_latest = img;
