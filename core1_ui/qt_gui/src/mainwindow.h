@@ -15,6 +15,7 @@
 #include <QMainWindow>
 #include <QImage>
 #include <QLabel>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVector>
 #include <QWidget>
@@ -44,6 +45,9 @@ public slots:
     void onRecogResult(const QString &plate, double confidence, int source);
     void onRecogFailed(const QString &reason);
     void onK210Busy(bool busy);
+
+protected:
+    void showEvent(QShowEvent *e) override;   /* logs the real window size */
 
 private slots:
     void onFrameTick();     /* 100 ms: pull newest decoded frame */

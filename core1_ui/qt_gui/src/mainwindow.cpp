@@ -2,10 +2,12 @@
 #include "k210_link.h"
 
 #include <QDateTime>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFont>
 #include <QPalette>
+#include <QScreen>
 
 /* Chinese UI literals as UTF-8 escapes: keeps every source file pure ASCII
  * (board toolchain rule) while the on-screen text stays Chinese. */
@@ -51,12 +53,39 @@ MainWindow::MainWindow(QWidget *parent)
     onClock();
     applyCloudChip();        /* initial CLOUD:-- until step-7 cloud reports */
 
-    /* fullscreen on the board (no window manager), windowed on the PC */
+    /* Board (linuxfb, no window manager): showFullScreen() alone does NOT
+     * resize the window here - measured on the board, the window stayed at
+     * its sizeHint (384x302) and painted only the top-left quarter of the
+     * 1024x600 panel. Set the geometry explicitly from the screen the driver
+     * reports (FBIOGET_VSCREENINFO on this board: 1024x600, 16bpp, stride
+     * 2048 - correct, so QScreen geometry is trustworthy here). */
     const QString plat = qgetenv("QT_QPA_PLATFORM").toLower();
-    if (plat.contains("linuxfb") || plat.contains("eglfs"))
-        showFullScreen();
-    else
+    QScreen *scr = QGuiApplication::primaryScreen();
+    QRect sg = scr ? scr->geometry() : QRect();
+    if (sg.isEmpty())
+        sg = QRect(0, 0, 1024, 600);
+    if (plat.contains("linuxfb") || plat.contains("eglfs")) {
+        /* no window manager: an explicit geometry is the whole story.
+         * showFullScreen() is deliberately NOT used - the fullscreen state
+         * left the window at its sizeHint here (see note above). */
+        setGeometry(sg);
+    } else {
         resize(1024, 600);
+    }
+    qWarning("display: plat='%s' screen=%dx%d+%d+%d dpr=%.2f -> window=%dx%d",
+             qPrintable(plat), sg.width(), sg.height(), sg.x(), sg.y(),
+             scr ? scr->devicePixelRatio() : 1.0, width(), height());
+}
+
+void MainWindow::showEvent(QShowEvent *e)
+{
+    QMainWindow::showEvent(e);
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        qWarning("display: visible window=%dx%d+%d+%d state=0x%x",
+                 width(), height(), x(), y(), unsigned(windowState()));
+    }
 }
 
 void MainWindow::buildUi()

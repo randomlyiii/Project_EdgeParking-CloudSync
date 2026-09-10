@@ -1,0 +1,26 @@
+[Unit]
+Description=EdgeParking M4 firmware load (remoteproc + can0 clock + rpmsg bind)
+# Boot order: M4 first, then core0 (opens /dev/ttyRPMSG0), then the UI.
+Before=core0-bus.service park-ui.service
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# load_m4.sh does, in order:
+#   1. ensure_can_clock: keep m_can bound, can0 up @500k so the kernel keeps
+#      the fdcan_k clock enabled (without it HAL_FDCAN_Init hangs inside M4)
+#   2. echo start > /sys/class/remoteproc/remoteproc0/state
+#   3. driver_override + bind rpmsg_tty -> /dev/ttyRPMSG0 appears
+ExecStart=/opt/core0/tools/load_m4.sh start
+# M4 bring-up is known to be flaky: a failed first attempt must not block
+# boot, core0 then simply runs with the link DOWN and retries.
+# Retry by hand:  systemctl restart m4-load   (wait >=2 min between tries)
+SuccessExitStatus=0 1 2
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

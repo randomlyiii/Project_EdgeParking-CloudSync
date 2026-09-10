@@ -226,8 +226,9 @@ int main(int argc, char *argv[])
                 while (*s == ' ') s++;
                 {
                     size_t k = 0;
-                    while (s[k] && s[k] != ' ' && k < sizeof(type_s) - 1)
-                        type_s[k++] = s[k];
+                    while (k < sizeof(type_s) - 1 && s[k] != '\0' && s[k] != ' ')
+                        k++;
+                    memcpy(type_s, s, k);
                     type_s[k] = '\0';
                 }
                 type = (int)strtol(type_s, NULL, 16);
@@ -276,8 +277,9 @@ int main(int argc, char *argv[])
                 while (*s == ' ') s++;
                 {
                     size_t k = 0;
-                    while (s[k] && s[k] != ' ' && k < sizeof(type_s) - 1)
-                        type_s[k++] = s[k];
+                    while (k < sizeof(type_s) - 1 && s[k] != '\0' && s[k] != ' ')
+                        k++;
+                    memcpy(type_s, s, k);
                     type_s[k] = '\0';
                 }
                 type = (int)strtol(type_s, NULL, 16);

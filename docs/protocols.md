@@ -97,12 +97,77 @@
 - 心跳：双向 500ms；**任一侧 1s 未收到任何有效帧 → LINK_DOWN**（0x7E 或 0x21 转发均可保鲜）；恢复后收方发 0x13 查询重同步。
 - seq：发送方按 type 各自计数、单调递增；接收方按 type 记录 last_seq，跳变即计入丢帧统计（0x7E 双向各自计数不互扰）。
 
-## 4. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
+## 4. 双 A7 共享内存 `/park_shm`（P6-01；v3 2026-09-11 定版）
+
+> 权威定义 = `core0_service/ipc_shm/park_shm.h`（Writer：Core0 业务守护；Reader：`core1_ui/qt_gui/src/park_shm.h`，**两份必须逐字节一致**，头文件内含编译期布局断言防止漂移）。写方 `shm_open("/park_shm", O_CREAT|O_RDWR, 0600)` + `ftruncate(sizeof(park_shm_t))`；读方 `O_RDWR` + `mmap(PROT_READ|PROT_WRITE, MAP_SHARED)`（读方也**必须可写**：心跳/结果/远程请求由 Core1 写入，见 §4.3）。
+
+`park_shm_t`（`sizeof = 76`，自然对齐，无 `#pragma pack`）：
+
+| 偏移 | 字段 | 类型 | 归属 | 说明 |
+|---|---|---|---|---|
+| 0 | `magic` | u32 | Core0 | `0x5041524B`（"PARK"） |
+| 4 | `version` | u32 | Core0 | **当前 = 3**；版本不符读写双方均拒绝/告警 |
+| 8 | `seq` | volatile u32 | Core0 | 写方更新前后各 +1；读方整块读后再读 seq，不等则重试（防撕裂读） |
+| 12 | `free_slots` | i32 | Core0 | 空闲车位，限幅 [0, `total_slots`] |
+| 16 | `used_slots` | i32 | Core0 | 已停车位；`free+used == total` |
+| 20 | `gate_state` | u8 | Core0 | 0 关 / 1 开（以 0x23 实测状态校正） |
+| 21 | `link_flags` | u8 | Core0 | bit0 rpmsg ｜ bit1 M4 在线 ｜ bit2 Core1 在线 |
+| 22 | `recog_pending` | u8 | Core0 | 1 = 有车待识别（登记时置 1，出结果/超时清 0） |
+| 23 | `cloud_pending` | u8 | **Core1** | 1 = 云兜底进行中 → Core0 识别超时 3s 延长至 6s 硬上限 |
+| 24 | `result_valid` | u8 | **Core1** | 1 = 结果有效；Core0 读走并清 0 |
+| 25 | `result_source` | u8 | **Core1** | 0 = 端侧(K210) / 1 = 云兜底 |
+| 28 | `confidence` | float | **Core1** | 0~1（阈值判定在 Core1，Core0 不做比较） |
+| 32 | `plate[16]` | char[16] | **Core1** | UTF-8 中文车牌，≤15B + NUL |
+| 48 | `hb_core1` | volatile u32 | **Core1** | 每 1s +1；Core0 每 3s 检查无变化 → 判失联（故障字 bit2） |
+| 52 | `req_gate_open` | volatile u8 | **Core1** | 脉冲：写 1 生效，Core0 执行后自清 |
+| 53 | `req_gate_close` | volatile u8 | **Core1** | 脉冲：同上（走 0x12） |
+| 54 | `fault_bits` | volatile u8 | Core0 | 故障字，见 §4.4 |
+| 56 | `conf_threshold` | float | Core0 | 识别置信度阈值（Core0 为配置权威，下发给 Core1 判定用），默认 0.60 |
+| 60 | `evt_seq_c0` | volatile u32 | Core0 | **v3**：置 `evt_bits_c0` 后 +1（事件发布点） |
+| 64 | `evt_bits_c0` | volatile u8 | Core0 | **v3**：Core0→Core1 事件位掩码（`PARK_EVB(code)`） |
+| 68 | `evt_seq_c1` | volatile u32 | **Core1** | **v3**：置 `evt_bits_c1` 后 +1 |
+| 72 | `evt_bits_c1` | volatile u8 | **Core1** | **v3**：Core1→Core0 事件位掩码 |
+
+### 4.1 事件码与跨进程事件通道（v3）
+
+| 码 | 位（`PARK_EVB`） | 方向 | 含义 |
+|---|---|---|---|
+| `0x01` | `0x02` | Core0 → Core1 | 触发识别（车辆登记完成） |
+| `0x02` | `0x04` | Core1 → Core0 | 识别结果就绪 |
+| `0x03` | `0x08` | Core0 → Core1 | 业务状态变更（UI 刷新） |
+| `0x04` | `0x10` | Core0 → Core1 | 请求重同步（链路恢复后） |
+
+- **为什么不用 eventfd**：`eventfd(2)` 的匿名 fd 无法被另一个独立进程打开，且 `EFD_CLOEXEC` 使其不能跨 `exec` 传递；本 Demo 中 Core0/Core1 是两个独立进程且无 fd 传递通道（systemd 亦不传 fd）。故 v3 用共享内存事件字实现同语义：**生产方先置位、再 +1 序号；消费方轮询序号变化后读取位并清除**。轮询周期 200ms（Core1 tick），满足 spec 4.1.3 的“状态刷新 ≤500ms”。
+- 同进程/本地调试仍可用 `ipc_evt_*`（eventfd）快速路径，与 shm 事件通道互不影响（`--evt-c1` 传入 fd 时两条路都会走）。
+
+### 4.2 一致性与版本
+
+1. 写方启动即 `memset` + 盖 `magic/version` 并 `ftruncate` 到自身结构大小；读方校验 `magic` 与 `version`，**不符则拒绝挂载并打印 ERROR**（不再静默）。
+2. `seq` 撕裂保护：读方整块拷贝 → 再读 `seq`，不等则重试（最多 3 次）。
+3. 两端必须**同时重建**（版本 3）。旧二进制（v1/v2）与新二进制不兼容，读方会拒绝挂载。
+4. 头文件含 `PARK_SHM_ASSERT` 编译期布局断言（`sizeof==76` 及关键字段偏移），两份副本一旦漂移即编译失败。
+
+### 4.3 职责划分（谁写哪些字段）
+
+- **Core0 写**：`magic/version/seq/free_slots/used_slots/gate_state/link_flags/recog_pending/fault_bits/conf_threshold/evt_*_c0`。
+- **Core1 写**：`hb_core1/cloud_pending/result_valid/result_source/confidence/plate/req_gate_open/req_gate_close/evt_*_c1`。
+- ⚠️ Core1 必须**以 `O_RDWR` 打开并 `PROT_WRITE` 映射**：只读打开会让心跳/结果/远程请求永远写不进去，Core0 会在 3s 后判 Core1 失联并跳过识别（已验证的集成陷阱）。
+
+### 4.4 故障字 `fault_bits`
+
+| 位 | 含义 |
+|---|---|
+| bit0 | rpmsg 断链（LINK_DOWN 置 1，恢复清 0） |
+| bit1 | M4 侧从节点（C8T6）离线（0x22 上报 0 置 1） |
+| bit2 | Core1 失联（心跳 3s 无变化置 1） |
+| bit3 | CAN 错误（0x23 上抛的 CAN 错误计数非零） |
+| bit4 | 云兜底失败（第7步起生效，本步预留） |
+
+## 5. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
 
 | 通道 | 内容概要 | 状态 |
 |---|---|---|
-| Modbus-TCP 寄存器表（Core0 ↔ 上位机） | 0x0000~0x0041 寄存器映射 | 第4步实现时拷入 |
-| 双 A7 共享内存 `/park_shm` + eventfd | `park_shm_t` 结构体与事件码 | 第6步实现时拷入 |
+| Modbus-TCP 寄存器表（Core0 ↔ 上位机） | 原 0x0000~0x0041 寄存器映射 | **已废弃**（2026-09-11：Demo 无上位机；监控归 Core1 UI 读共享内存、远程控制走 0x11/0x12、白名单改本地配置热加载） |
 | 云端（Core1 → DeepSeek；可选 MQTT） | Vision API 请求/响应、MQTT 主题 | 第7步实现时拷入 |
 
 ## 变更记录
@@ -113,3 +178,4 @@
 | 2026-09-07 | RPMSG 拷入为 §3：payload ≤480B；0x11/0x12/0x13 空；0x21=id(4B LE)+dlc(1B)+data(8B)+tick(4B LE)；0x22=1B；0x23=闸(1B)/在线(1B)/CAN错误计数 u16 LE；0x7E=1B 序号；1s 无有效帧 LINK_DOWN。对应 `core0_service/rpmsg/` 代码落地（待板端编译联调） | Core0 / M4 |
 | 2026-09-08 | M4 位时序二次更正：运行环境时钟不同（工程模式=PLL3Q 100MHz，Linux 引导=62.5MHz），静态配法不可两全 → 改为启动实测 + 自动换算（FDCAN2_AutotuneBitTiming） | M4 |
 | 2026-09-08 | 新增 0x110 主→从 事件确认帧：主端收 0x200 自动回执(d[0] 回显事件码)，从端 OLED 行4 显示 `CAN:*OK*` | M4 / C8T6 |
+| 2026-09-11 | 共享内存正式拷入为 §4（v3）：`park_shm_t` 全字段/偏移、事件码与**跨进程事件通道**（匿名 eventfd 不可跨进程 → 改用 `evt_bits_c0/c1`+`evt_seq_c0/c1`，200ms 轮询）、Core0/Core1 字段归属、故障字位定义；同时明确 Core1 必须 `O_RDWR` 挂载（只读会让心跳/结果写不进 → Core0 判失联）。头文件加编译期布局断言（sizeof=76）。Modbus-TCP 通道标记废弃 | Core0 / Core1 |

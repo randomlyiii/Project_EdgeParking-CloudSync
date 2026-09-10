@@ -19,3 +19,9 @@ build/
 # others
 code.txt
 error.txt
+
+# ---- local build/run artifacts + stale copies (2026-09-11) ----
+*.exe
+__pycache__/
+core1_ui/deploy/
+core1_ui/rpmsg_link_test.py

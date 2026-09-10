@@ -15,24 +15,57 @@
 #include <unistd.h>
 #include <sys/select.h>
 
-/* K210 camera mount orientation fix.
- * 2026-09-11 (measured on the K210 board with ORIENT_PROBE): the RAW sensor
- * frame is already upright and not mirrored -> ORIENT combo 0 (vflip=0,
- * hmirror=0) is correct, so the display must NOT transform the frame.
- * The old round-5 horizontal mirror is therefore OFF by default.
- * Set K210_VIEW_HMIRROR to 1 only if the preview really looks mirrored
- * (0 = no transform, 1 = mirrored(true,false), 2 = flipped 180).
+/* K210 camera mount orientation fix (DISPLAY side only).
+ * FINAL (measured on the board 2026-09-11 with single-axis probes): NO
+ * transform is needed. The K210 firmware (main.py) software-mirrors the
+ * frame (CAM_SW_HMIRROR=True) and that one fix makes BOTH the K210's own
+ * onboard LCD and this MP157 panel correct. Probe evidence:
+ *   vflip   -> vertical wrong, horizontal right
+ *   hmirror -> horizontal wrong, vertical right
+ * Each single-axis flip broke exactly its own axis, which is only possible
+ * if the untransformed frame is already correct.
+ *   0 = none, 1 = mirrored(true,false) hmirror,
+ *   2 = mirrored(true,true) flip180, 3 = mirrored(false,true) vflip
+ * Runtime override without a rebuild, via /etc/park-ui.env:
+ *   PARK_UI_K210_FLIP=none|hmirror|flip180|vflip   (then restart park-ui)
  * g_orientMarker lets you verify which build is deployed:
  *   strings /opt/park_ui/park_ui | grep K210-ORIENT
  * File demo mode is untouched (checked in publishJpeg). Pure ASCII only. */
-#define K210_VIEW_HMIRROR 0
-#if (K210_VIEW_HMIRROR == 1)
+#define K210_VIEW_FLIP 0
+#if (K210_VIEW_FLIP == 1)
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-HMIRROR";
-#elif (K210_VIEW_HMIRROR == 2)
+#elif (K210_VIEW_FLIP == 2)
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-FLIP180";
+#elif (K210_VIEW_FLIP == 3)
+const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-VFLIP";
 #else
 const char g_orientMarker[] __attribute__((used)) = "K210-ORIENT-NONE";
 #endif
+
+/* Runtime override, so the orientation can be found WITHOUT a rebuild:
+ *   /etc/park-ui.env:  PARK_UI_K210_FLIP=none|hmirror|flip180|vflip
+ *   systemctl restart park-ui        (effective value is logged to journal)
+ * Empty / unknown -> the compile-time K210_VIEW_FLIP above. */
+static int flipModeFromEnv()
+{
+    const QByteArray v = qgetenv("PARK_UI_K210_FLIP").trimmed().toLower();
+    if (v.isEmpty())                  return K210_VIEW_FLIP;
+    if (v == "none" || v == "0")      return 0;
+    if (v == "hmirror" || v == "1")   return 1;
+    if (v == "flip180" || v == "2")   return 2;
+    if (v == "vflip" || v == "3")     return 3;
+    return K210_VIEW_FLIP;
+}
+
+static const char *flipModeName(int m)
+{
+    switch (m) {
+    case 1: return "hmirror";
+    case 2: return "flip180";
+    case 3: return "vflip";
+    default: return "none";
+    }
+}
 
 /* ============================ Worker ============================ */
 /* Runs in its own QThread. Owns the fd, the two frame parsers and the
@@ -49,6 +82,7 @@ public:
     QString mode = "auto"; /* auto | text | binary | file | none */
     QString filePath;
     volatile bool stopFlag = false;
+    int m_flip = K210_VIEW_FLIP;   /* resolved from env in run() */
 
     void run();
 public slots:
@@ -114,15 +148,14 @@ private:
         QImage img;
         if (!img.loadFromData(jpeg, "JPEG") || img.isNull())
             return;
-        /* 2026-09-11: raw K210 frame measured correct -> no transform by
-         * default (see K210_VIEW_HMIRROR up top). File demo stays as is. */
-#if (K210_VIEW_HMIRROR == 1)
+        /* display-side orientation only; K210 firmware already hmirrors so
+         * its onboard LCD is correct. Mode from env or compile-time default. */
         if (mode != "file")
-            img = img.mirrored(true, false);
-#elif (K210_VIEW_HMIRROR == 2)
-        if (mode != "file")
-            img = img.mirrored(true, true);
-#endif
+        {
+            if (m_flip == 1)      img = img.mirrored(true, false);
+            else if (m_flip == 2) img = img.mirrored(true, true);
+            else if (m_flip == 3) img = img.mirrored(false, true);
+        }
         QMutexLocker lk(&m_mutex);
         m_latest = img;
         m_newFrame = true;
@@ -228,6 +261,9 @@ void K210LinkWorker::closeSerial()
 
 void K210LinkWorker::run()
 {
+    m_flip = flipModeFromEnv();
+    qWarning("k210 link: orient=%s (build marker %s, env PARK_UI_K210_FLIP)",
+             flipModeName(m_flip), g_orientMarker);
     if (mode == "none")
     {
         setUp(false);
@@ -393,8 +429,7 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
         }
         else if (line.startsWith("K2:OK:"))
         { /* continuous-recognition result (console uplink), 0xC2 semantics */
-            const QJsonDocument doc = QJsonDocument::fromJson(
-                line.mid(6).toUtf8());
+            const QJsonDocument doc = QJsonDocument::fromJson(line.mid(6));
             if (doc.isObject())
             {
                 const QJsonObject o = doc.object();
@@ -433,7 +468,6 @@ void K210LinkWorker::feedBinary(const QByteArray &bytes)
             m_rxBuf.remove(0, 1);
             continue;
         }
-        const quint8 type = quint8(m_rxBuf.at(2));
         const int len = int(quint8(m_rxBuf.at(6))) |
                         (int(quint8(m_rxBuf.at(7))) << 8);
         if (len > 1024)

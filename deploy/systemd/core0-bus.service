@@ -1,0 +1,25 @@
+[Unit]
+Description=EdgeParking core0 business daemon (park_shm + RPMSG + state machine)
+# G4 component: owns /park_shm (v3), talks RPMSG to M4, runs the 7-state
+# business state machine, consumes Core1 recognition results + gate requests.
+After=m4-load.service
+Wants=m4-load.service
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/core0
+# -c <conf>: local config = single source of truth (whitelist / slots /
+# timeouts / threshold); the daemon re-reads it on change (<=500 ms).
+# It tolerates a missing /dev/ttyRPMSG0 (link DOWN + auto reopen), so it is
+# safe to start even when the M4 unit failed.
+ExecStart=/opt/core0/core0_business -c /opt/core0/core0.conf
+Environment=CORE0_LOG_LEVEL=info
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,10 @@
  *   - 心跳：UP 后每 hb_interval_ms 发 0x7E（1B 序号 0..255 循环）
  *   - 保鲜：任何 CRC 通过的帧（0x7E/0x21/0x23…）都刷新 last_rx
  *   - DOWN：last_rx 超时 / 读 EOF / POLLERR|POLLHUP → 关 fd → 重开 → 清 RX → 发 0x13 重同步
+ * 诊断：本层无 log.h 依赖（rpmsg_demo/rpmsg_cli 也链它），因此断链/重开失败走
+ *       stderr 的 "[link] ..." 行（经 journald 可见），并明确写出 DOWN 的原因
+ *       （poll 失败 / POLLERR|POLLHUP / read EOF|errno / 超时），便于现场定位。
+ *       重开失败只打一条（恢复后复位），避免每秒刷屏。
  * 锁纪律：RX 线程内先持锁完成“读→拆帧→收集/更新快照”，再释放锁后调用用户 on_frame；
  *         用户回调里可自由调用 rpmsg_link_send*（不会死锁）。统计/快照读取全走同一把锁。
  */
@@ -43,6 +47,7 @@ struct rpmsg_link {
     uint64_t    last_rx_ms;      /* 最后有效帧时刻（monotonic ms） */
     rpmsg_m4_state_t m4;         /* 最近 0x23 快照 */
     int         have_m4;
+    int         open_fail_logged;/* 重开失败只打一次，恢复后复位 */
 
     /* RX 线程内帧收集（feed 回调只做拷贝，不跑用户代码） */
     rpmsg_frame_t pending[RPMSG_PENDING_MAX];
@@ -72,7 +77,14 @@ static void link_set_state(rpmsg_link_t *lk, int up)
         lk->cfg.on_link(up ? RPMSG_LINK_UP : RPMSG_LINK_DOWN, lk->cfg.opaque);
 }
 
-/* termios raw：rpmsg 字符设备按 tty 处理；失败可忽略（非 tty） */
+/* termios raw：rpmsg 字符设备按 tty 处理；失败可忽略（非 tty）
+ *
+ * ⚠️ 不要改 VMIN/VTIME！必须保持 cfmakeraw 的 VMIN=1/VTIME=0。
+ * 若设成 VMIN=0/VTIME=0，内核 n_tty_read() 会算出 timeout=0 并命中
+ * `if (!timeout) break;` 返回 0 —— 而这一句排在 `O_NONBLOCK -> -EAGAIN`
+ * 判断之前，于是**空缓冲的 read() 也返回 0**，本层会把 0 当成 EOF，
+ * 导致 open -> UP -> "read EOF" -> DOWN 每秒循环（2026-09-11 板验实测）。
+ * VMIN=1/VTIME=0 + O_NONBLOCK 才是"无数据返回 EAGAIN"的正确组合。 */
 static void cfg_raw(int fd)
 {
     struct termios tio;
@@ -82,8 +94,6 @@ static void cfg_raw(int fd)
     if (tcgetattr(fd, &tio) != 0)
         return;
     cfmakeraw(&tio);
-    tio.c_cc[VMIN] = 0;
-    tio.c_cc[VTIME] = 0;
     tcsetattr(fd, TCSANOW, &tio);
 }
 
@@ -224,9 +234,17 @@ static void *rx_thread_main(void *arg)
             next_open_try = now_ms() + lk->cfg.reopen_ms;
 
             if (fd < 0) {
-                /* 设备不存在（remoteproc 未加载/已停）：按 reopen_ms 节奏重试，不崩溃 */
+                /* 设备不存在（remoteproc 未加载/已停）：按 reopen_ms 节奏重试，不崩溃。
+                 * 只打一次日志（否则每秒一条刷屏）；成功打开后复位。 */
+                if (!lk->open_fail_logged) {
+                    lk->open_fail_logged = 1;
+                    fprintf(stderr, "[link] open %s failed: %s"
+                            " (retrying every %ums)\n", lk->cfg.device,
+                            strerror(errno), (unsigned)lk->cfg.reopen_ms);
+                }
                 continue;
             }
+            lk->open_fail_logged = 0;
             cfg_raw(fd);
 
             pthread_mutex_lock(&lk->lock);
@@ -273,6 +291,7 @@ static void *rx_thread_main(void *arg)
                 if (errno == EINTR)
                     continue;
                 /* poll 失败：按断链处理 */
+                fprintf(stderr, "[link] poll failed: %s -> DOWN\n", strerror(errno));
                 pthread_mutex_lock(&lk->lock);
                 if (lk->fd >= 0) { close(lk->fd); lk->fd = -1; }
                 pthread_mutex_unlock(&lk->lock);
@@ -286,6 +305,9 @@ static void *rx_thread_main(void *arg)
 
             /* 设备异常 */
             if (pfds[0].revents & (POLLERR | POLLHUP)) {
+                fprintf(stderr, "[link] %s revents=0x%02x (POLLERR/POLLHUP)"
+                        " -> DOWN\n", lk->cfg.device,
+                        (unsigned)pfds[0].revents);
                 pthread_mutex_lock(&lk->lock);
                 if (lk->fd >= 0) { close(lk->fd); lk->fd = -1; }
                 pthread_mutex_unlock(&lk->lock);
@@ -297,6 +319,7 @@ static void *rx_thread_main(void *arg)
             if (pfds[0].revents & POLLIN) {
                 uint8_t tmp[512];
                 int eof_err = 0;
+                int read_errno = 0;
 
                 for (;;) {
                     ssize_t r = read(lk->fd, tmp, sizeof(tmp));
@@ -315,10 +338,17 @@ static void *rx_thread_main(void *arg)
                         if (errno == EINTR)
                             continue;
                         eof_err = 1;
+                        read_errno = errno;
                         break;
                     }
                 }
                 if (eof_err) {
+                    if (read_errno != 0)
+                        fprintf(stderr, "[link] %s read failed: %s -> DOWN\n",
+                                lk->cfg.device, strerror(read_errno));
+                    else
+                        fprintf(stderr, "[link] %s read EOF -> DOWN\n",
+                                lk->cfg.device);
                     pthread_mutex_lock(&lk->lock);
                     if (lk->fd >= 0) { close(lk->fd); lk->fd = -1; }
                     pthread_mutex_unlock(&lk->lock);
@@ -342,6 +372,9 @@ static void *rx_thread_main(void *arg)
                 if (lk->fd >= 0 && now2 - lk->last_rx_ms >= lk->cfg.timeout_ms)
                     want_close = 1;
                 if (want_close && lk->fd >= 0) {
+                    fprintf(stderr, "[link] %s no frame for %ums"
+                            " -> DOWN (timeout)\n", lk->cfg.device,
+                            (unsigned)lk->cfg.timeout_ms);
                     close(lk->fd);
                     lk->fd = -1;
                 }

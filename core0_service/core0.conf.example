@@ -1,0 +1,38 @@
+# core0.conf.example - Core0 business daemon config (step 4 / P4-05)
+#
+# Usage:  cp core0.conf.example core0.conf
+#         ./core0_business -c core0.conf
+# Default lookup when -c is absent: ./core0.conf, else /etc/core0/core0.conf
+#
+# Every key is optional; a missing key keeps the built-in default.
+# The values below ARE the built-in defaults (total_slots default is 20).
+# The file is re-read on change (mtime/size), no restart needed (<=500ms).
+# Keep it pure ASCII if you edit it on the board over a serial console.
+
+[settings]
+# parking slots, 1..999
+total_slots = 20
+# passage counting mode: entry | exit
+count_mode = entry
+# recognition timeout, 500..60000 ms
+recog_timeout_ms = 3000
+# hard cap while cloud fallback is pending, >= recog_timeout_ms
+cloud_timeout_ms = 6000
+# de-duplication window after a gate action, 1000..60000 ms
+cool_down_ms = 4000
+# threshold published to core1 through shm, 0.0..1.0 (judged by core1, not here)
+conf_threshold = 0.60
+# debug | info | warn | error (env CORE0_LOG_LEVEL overrides the command line)
+log_level = info
+# optional log file, append. Empty = stderr only (journald collects it)
+log_file =
+# storage dir, only used by a build with -DENABLE_STORAGE=1. Empty = off
+storage_dir =
+
+[whitelist]
+# <plate> [allow|deny] [YYYY-MM-DD]
+# The plate is opaque bytes: ASCII is safest for on-board edits, UTF-8
+# province characters work when the file is scp'd from the repo.
+TEST001 allow 2099-12-31
+TEST002 deny 2099-12-31
+TEST003 allow 2020-01-01
