@@ -20,7 +20,7 @@
 #include <QVariant>
 
 /* Demo plate used by the fake mode: it is the whitelisted example entry of
- * core0.conf.example, so the whole chain can be demonstrated without network. */
+ * sample_core0.conf, so the whole chain can be demonstrated without network. */
 static const char *kFakePlate = "TEST001";
 
 CloudClient::CloudClient(QObject *parent)
@@ -225,7 +225,7 @@ QByteArray CloudClient::buildBody(const QImage *frame) const
     QJsonObject root;
     root.insert(QStringLiteral("model"), m_s.model);
     root.insert(QStringLiteral("messages"), messages);
-    root.insert(QStringLiteral("max_tokens"), 64);
+    root.insert(QStringLiteral("max_tokens"), 256);
     root.insert(QStringLiteral("temperature"), 0);
 
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
@@ -502,6 +502,76 @@ QString CloudClient::httpHint(int status)
     return QStringLiteral("http status %1").arg(status);
 }
 
+/* A dead link does not arrive as a clean HTTP error: name resolution fails, the
+ * route is gone, or the socket simply times out. Classify that text so the
+ * panel and the journal name the real problem instead of blaming the transport.
+ * (2026-09-11: WiFi was not brought up after boot - the UI said "python
+ * transport failed" while the actual cause was a link with no lease.) */
+static bool looksLikeNetworkDown(const QString &text)
+{
+    const QString t = text.toLower();
+    static const char *const needles[] = {
+        "name resolution", "name or service not known", "nodename nor servname",
+        "network is unreachable", "no route to host", "network down",
+        "host not found", "could not resolve", "getaddrinfo",
+    };
+    for (int i = 0; i < 9; ++i) {
+        if (t.contains(QString::fromLatin1(needles[i])))
+            return true;
+    }
+    return false;
+}
+
+static bool looksLikeCertFailure(const QString &text)
+{
+    const QString t = text.toLower();
+    static const char *const needles[] = {
+        "certificate_verify_failed", "certificate verify failed",
+        "unable to get local issuer", "self-signed certificate",
+        "self signed certificate", "certificate has expired",
+        "certificate is not yet valid", "hostname mismatch",
+        "ca bundle missing",
+    };
+    for (int i = 0; i < 9; ++i) {
+        if (t.contains(QString::fromLatin1(needles[i])))
+            return true;
+    }
+    return false;
+}
+
+static QString cloudFailReason(const QString &detail, const QString &fallback)
+{
+    if (looksLikeNetworkDown(detail))
+        return QStringLiteral("no network");
+    /* Keep TLS verification failures in their own bucket: the fix is a clock or
+     * a CA bundle, never the transport (2026-09-11 real incident: the panel said
+     * "python transport failed" while python was reporting
+     * CERTIFICATE_VERIFY_FAILED). */
+    if (looksLikeCertFailure(detail))
+        return QStringLiteral("certificate verify failed");
+    const QString t = detail.toLower();
+    if (t.contains(QLatin1String("timed out")) ||
+        t.contains(QLatin1String("timeout")))
+        return QStringLiteral("timeout");
+    return fallback;
+}
+
+/* One-line, length-bounded view of a response body for the journal/panel.
+ * The API key is only ever sent in the request header, never echoed in a body,
+ * so a snippet is safe to log - and it is the only way to tell a model error
+ * from a truncated or filtered answer. */
+static QString collapseForLog(const QByteArray &body, int maxChars = 240)
+{
+    QString s = QString::fromUtf8(body.left(2000));
+    s.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    s.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    s.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    s = s.simplified();
+    if (s.size() > maxChars)
+        s = s.left(maxChars) + QStringLiteral("...");
+    return s;
+}
+
 void CloudClient::onReplyFinished()
 {
     if (m_reply == nullptr)
@@ -527,7 +597,7 @@ void CloudClient::onReplyFinished()
         else if (status > 0)
             reason = httpHint(status);
         else
-            reason = QStringLiteral("network error");
+            reason = cloudFailReason(errStr, QStringLiteral("network error"));
 
         QString detail = errStr;
         if (err == QNetworkReply::SslHandshakeFailedError)
@@ -649,7 +719,12 @@ void CloudClient::processBody(const QByteArray &body, int status, qint64 ms)
     QString perr;
     if (!extractContent(body, &content, &perr)) {
         updateStats(false, ms, perr);
-        emit failed(perr, QStringLiteral("body %1B").arg(body.size()));
+        /* keep a collapsed snippet: "body 795B" alone tells nobody whether the
+         * server complained about the model, the key or the image. The body
+         * never contains the API key. */
+        emit failed(perr, QStringLiteral("body %1B: %2")
+                              .arg(body.size())
+                              .arg(collapseForLog(body)));
         return;
     }
 
@@ -733,7 +808,7 @@ try:
                         "image_url": {"url": "data:image/jpeg;base64," + b64}})
     body = json.dumps({"model": job["model"],
                        "messages": [{"role": "user", "content": content}],
-                       "max_tokens": int(job.get("max_tokens", 64)),
+                       "max_tokens": int(job.get("max_tokens", 256)),
                        "temperature": 0}).encode("utf-8")
     req = urllib.request.Request(
         job["api_base"], data=body,
@@ -749,7 +824,12 @@ try:
     elif ca and os.path.exists(ca):
         ctx = ssl.create_default_context(cafile=ca)
     else:
+        # This rootfs ships NO system store (/etc/ssl/certs is absent), so the
+        # default context cannot verify anything: say so instead of producing a
+        # bare "certificate verify failed" (2026-09-11 real incident).
         ctx = ssl.create_default_context()
+        if ca and not os.path.exists(ca):
+            out["warn"] = "CA bundle missing: " + ca
     try:
         r = urllib.request.urlopen(req, timeout=float(job.get("timeout_s", 6)),
                                    context=ctx)
@@ -761,7 +841,19 @@ try:
         out["error"] = "http " + str(e.code)
         out["body"] = e.read().decode("utf-8", "replace")
 except Exception as e:
-    out["error"] = "%s: %s" % (type(e).__name__, e)
+    msg = "%s: %s" % (type(e).__name__, e)
+    # ssl.SSLCertVerificationError carries the human reason ("certificate has
+    # expired" / "self-signed certificate" / "not yet valid"): keep it, it is
+    # what tells clock problems apart from a missing CA bundle.
+    vm = getattr(e, "verify_message", "")
+    if vm:
+        msg += " | verify: " + vm
+    if not out.get("warn") and "CERTIFICATE_VERIFY_FAILED" in str(e):
+        out["warn"] = ("verify against ca_file=%r; this rootfs has no system "
+                       "store (no /etc/ssl/certs)" % (job.get("ca_file") or ""))
+    if out.get("warn"):
+        msg += " | " + out["warn"]
+    out["error"] = msg
 sys.stdout.write(json.dumps(out))
 )PY";
 
@@ -795,7 +887,7 @@ void CloudClient::sendViaPython(bool isTest, bool writeback,
     job.insert(QStringLiteral("api_key"), m_s.apiKey);
     job.insert(QStringLiteral("model"), m_s.model);
     job.insert(QStringLiteral("prompt"), m_s.prompt);
-    job.insert(QStringLiteral("max_tokens"), isTest ? 4 : 64);
+    job.insert(QStringLiteral("max_tokens"), isTest ? 4 : 256);
     job.insert(QStringLiteral("timeout_s"),
                double(m_s.timeoutMs > 0 ? m_s.timeoutMs : 5000) / 1000.0);
     job.insert(QStringLiteral("insecure"), m_s.insecureTls);
@@ -910,9 +1002,12 @@ void CloudClient::onPythonFinished(int exitCode, QProcess::ExitStatus status)
             processBody(body, httpStatus, ms);
             return;
         }
-        updateStats(false, ms, httpStatus > 0 ? httpHint(httpStatus)
-                                              : QStringLiteral("python transport"));
-        emit failed(QStringLiteral("python transport failed"), detail);
+        const QString pyReason =
+            httpStatus > 0 ? QStringLiteral("python transport failed")
+                           : cloudFailReason(detail,
+                                             QStringLiteral("python transport failed"));
+        updateStats(false, ms, httpStatus > 0 ? httpHint(httpStatus) : pyReason);
+        emit failed(pyReason, detail);
         return;
     }
     qWarning("cloud: python transport ok in %lld ms (http %d)",
@@ -987,12 +1082,27 @@ bool CloudClient::extractContent(const QByteArray &body, QString *out,
             *err = QStringLiteral("no choices in response");
         return false;
     }
-    const QJsonObject msg = choices.at(0).toObject()
-                                .value(QStringLiteral("message")).toObject();
+    const QJsonObject ch0 = choices.at(0).toObject();
+    const QJsonObject msg = ch0.value(QStringLiteral("message")).toObject();
     QString text = msg.value(QStringLiteral("content")).toString();
     if (text.isEmpty()) {
+        /* An HTTP 200 with an empty message happens with "thinking" models:
+         * max_tokens is consumed by the reasoning tokens and the visible
+         * content comes back empty. Report the reason instead of a dead end
+         * (2026-09-11 real incident: "FAILED empty content: body 795B").
+         * Snippet of the raw body is added by the caller. */
+        const QString fr = ch0.value(QStringLiteral("finish_reason")).toString();
+        const QString reasoning =
+            msg.value(QStringLiteral("reasoning_content")).toString();
+        QString why = QStringLiteral("empty content");
+        if (!fr.isEmpty())
+            why += QStringLiteral(" (finish_reason=%1)").arg(fr);
+        if (!reasoning.isEmpty())
+            why += QStringLiteral(
+                " | answer was reasoning-only: use a non-thinking model "
+                "(deepseek-chat / qwen-vl-max) or raise max_tokens");
         if (err != nullptr)
-            *err = QStringLiteral("empty content");
+            *err = why;
         return false;
     }
     /* strip ```json ... ``` fences and surrounding prose */

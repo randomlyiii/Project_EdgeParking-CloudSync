@@ -160,6 +160,10 @@ int main(int argc, char *argv[])
     CloudClient cloud;
     cloud.setSettings(cset);
     WifiManager wifi;
+    /* The WiFi interface is normally wlan0; PARK_UI_WIFI lets a board with a
+     * differently named interface be brought up without a rebuild (it was
+     * already documented in G7_ACCEPTANCE / deploy/README). */
+    wifi.setInterface(qEnvironmentVariable("PARK_UI_WIFI", "wlan0"));
 
     SettingsPage settings(&cset, &cloud, &wifi);
     win.setSettingsPage(&settings);
@@ -232,11 +236,25 @@ int main(int argc, char *argv[])
     QObject::connect(&cloud, &CloudClient::failed, &writer,
                      [&](const QString &reason, const QString &detail) {
                          /* journal as well as the ticker: remote debugging
-                          * needs the classified reason (timeout / 401 / tls) */
-                         qWarning("cloud: FAILED %s (%s)",
-                                  qPrintable(reason), qPrintable(detail));
-                         win.pushEvent(QStringLiteral("cloud: FAILED %1 (%2)")
-                                           .arg(reason, detail));
+                          * needs the classified reason (timeout / 401 / tls)
+                          * AND the link state - a missing WiFi lease is by far
+                          * the most common cause of "the cloud stopped working"
+                          * (see wifi-up.service). */
+                         const WifiStatus ws = wifi.status();
+                         qWarning("cloud: FAILED %s (%s) [wifi:lease=%s ssid=%s]",
+                                  qPrintable(reason), qPrintable(detail),
+                                  ws.hasIp ? "yes" : "no",
+                                  qPrintable(ws.ssid));
+                         QString line = QStringLiteral("cloud: FAILED %1 (%2)")
+                                            .arg(reason, detail);
+                         if (!ws.hasIp)
+                             line += QStringLiteral(
+                                 " - no WiFi lease: systemctl restart wifi-up");
+                         else if (reason.contains(QLatin1String("certificate")))
+                             line += QStringLiteral(
+                                 " - check date -u (no RTC) and /etc/park/ca.pem"
+                                 " (or set insecure_tls=1 for a demo)");
+                         win.pushEvent(line);
                          writer.clearCloudPending();  /* no-op if not pending */
                      });
     QObject::connect(&cloud, &CloudClient::unreadable, &writer,
