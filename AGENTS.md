@@ -59,7 +59,7 @@
 
 ## 五、git / 环境 / 工具备忘
 - git 在 `C:\Program Files\Git\cmd\git.exe`（不在 PATH）。远程 `https://github.com/randomlyiii/Project_EdgeParking-CloudSync.git`，分支 master。
-- **git 现状（2026-09-11 收工）**：第7步（云端兜底 + LCD 运维面 + WiFi + 地址隐私）分三次提交——`339ff0d` feat(deploy) 云配置模板+开机校时+清陈旧副本 / `2919121` feat(core1) 第7步云端兜底+LCD 运维面 / `a19de5d` docs 协议+任务分解+记忆；紧邻的 `84d3b66` = 云端 API 测试工具（P7-01）。**沙箱无 SSH key，`git push` 需你在本地终端执行**；远程 `git@github.com:randomlyiii/Project_EdgeParking-CloudSync.git`（SSH）。
+- **git 现状（2026-09-11 收工）**：第7步（云端兜底 + LCD 运维面 + WiFi + 地址隐私）分三次提交——`339ff0d` feat(deploy) 云配置模板+开机校时+清陈旧副本 / `2919121` feat(core1) 第7步云端兜底+LCD 运维面 / `a19de5d` docs 协议+任务分解+记忆，随后 `fd46284` chore(memory) 记录哈希；紧邻的 `84d3b66` = 云端 API 测试工具（P7-01）。**`git push` 本会话起可以直接用**（GitHub SSH 免密已生效，实测 `84d3b66..fd46284 master -> master`）——若某天又失败再加 `GIT_SSH_COMMAND="ssh -o BatchMode=yes"` 看具体报错；远程 = `git@github.com:randomlyiii/Project_EdgeParking-CloudSync.git`（SSH），分支 master。
 - **⛔ 提交纪律（2026-09-11 用户明确要求）**：**不要自动 git 提交**——改完代码只留工作区，等用户明确说"提交/commit"才提交。**提交信息临时文件写到仓库外**（本次用 `$env:TEMP\parkmsgN.txt` + `git commit -F`，纯 ASCII 路径、中文不进命令行）——曾把 `.git-commit-msg.tmp` add 进 `8ba0ebe`，只能再补 chore 删它。（K210 接入那次 `7d0bc26` 曾被 reset 撤销，其内容后已入库；`k210_fw/参考代码-车牌识别实验/` 三模型与 `core1_ui/ca.pem` 仍不入库，后者已进 `.gitignore`。）
 - 框架目录（`k210_fw`、`m4_fw`、`core0_service`、`core1_ui`、`docs`、`deploy`）**均已入库**，空叶子有 `.gitkeep`；`.gitignore` 已补 `cloud.conf*/cloud.env/key.txt` 与 CA 本地副本规则（用户亦改过）。**`.ioc` 重生成、板端构建产物、`/etc/park/*`、`core1_ui/ca.pem` 一律不入库。**
 - 参考资料：`E:\download\100ASK-MP157\100ask-mp157原理图\01_Base_board(底板)\`（原理图 pdf + `.DSN` + `.brd`）。**`.DSN` 可用 grep 搜明文网表/备注；两个 PDF 文字被压缩、且本环境无 PDF 渲染/转换工具**（`pwsh` 读 E: 二进制被沙箱挡、curl schannel 拉不下来 poppler）。
@@ -73,7 +73,7 @@
 3. **✅ 第3步 Linux↔M4 RPMSG 已通（2026-09-10 G3 全链路验收通过，见四·M4 RPMSG 小节）**：RPMSG 双向(ttyRPMSG0/0x23/0x7E) + 0x11/0x12→CAN→C8T6 闸门闭环 + 重启 flaky 根因根治（can0 释放方式/OpenAMP 位置）。**下次续**：① C8T6 在手时补测手遮→0x21 与断链 0x22（G3 最后几项）；② 正式版 M4 重编（宏已置 0，当前板端还是验证版）；③ core0_service C demo 交叉编译方案（板端无 make/gcc）；全勾 G3 后进入第4步 Linux 本地业务。
 4. C8T6 侧 CAN 已全闭环（心跳/查询/遮光事件/0x110 确认）；**SG90 已挂载（09-09 设计功能，待真机自检+联调动作验证）**；BH1750 物理验收 + 遮光阈值现场微调见 `c8t6/can.md` §7。
 5. M4↔C8T6 稳定联调（500k/120Ω/共地已通）；第3步 RPMSG 已接入 A7 业务（0x11/0x12 闭环），下一环节 = 把"车到位→车牌→开闸"业务逻辑接到 A7。
-6. git：origin 已到 ab94d02；本地待推 = fec97e4 + 本次记忆/文档提交（见五·git 现状），推送由用户在本地终端执行。
+6. git：`origin/master` = 第7步三次提交 + 记忆小改（见五·git 现状），**工作区干净、已推送**。
 
 ## 七、Qt GUI 2026-09-09 状态（当前收工点）
 - **✅ Qt GUI 已用板端匹配版本编译成功**：`core1_ui/qt_gui/bin/park_ui` 已在 PC Linux 上生成 ARM 32-bit ELF；不能使用 OpenSTLinux SDK 的 Qt 5.14.1 编译，否则板端 Qt 5.12.8 启动时报 `QtPrivate::argToQString ... version Qt_5`。
