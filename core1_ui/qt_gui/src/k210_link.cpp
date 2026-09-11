@@ -142,6 +142,7 @@ private:
     /* --- fd --- */
     int m_fd = -1;
     bool m_up = false;
+    bool m_openFailLogged = false;   /* one-shot: report a missing device once */
 
     void publishJpeg(const QByteArray &jpeg)
     {
@@ -284,11 +285,22 @@ void K210LinkWorker::run()
             if (openSerial())
             {
                 errStreak = 0;
+                m_openFailLogged = false;
                 setUp(true);
             }
             else
             {
                 setUp(false);
+                /* device may appear later (USB CDC hot-plug). Report the
+                 * failure ONCE in the journal: without this a missing
+                 * /dev/ttyACMn only shows up as "no preview" on the LCD,
+                 * which is indistinguishable from "K210 not sending". */
+                if (!m_openFailLogged)
+                {
+                    m_openFailLogged = true;
+                    qWarning("k210 link: cannot open %s (%s) - retrying every 2s",
+                             qPrintable(dev), strerror(errno));
+                }
                 /* device may appear later (USB CDC hot-plug) */
                 for (int i = 0; i < 20 && !stopFlag; ++i)
                     QThread::msleep(100);

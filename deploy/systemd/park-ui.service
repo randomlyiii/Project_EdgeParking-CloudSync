@@ -3,16 +3,19 @@ Description=EdgeParking park_ui (Qt 5.12.8 linuxfb) - parking lot UI
 # Boot must land on our UI, not the vendor desktop. mxapp2 (eglfs, holds the
 # DRM master / draws the "default page") is killed in ExecStartPre before the
 # linuxfb app opens fb0; keep restarting on crash.
-# Full chain order: m4-load -> core0-bus (creates /park_shm) -> park-ui.
-After=m4-load.service core0-bus.service multi-user.target
-Wants=m4-load.service core0-bus.service multi-user.target
+# Full chain order: board-power -> m4-load -> core0-bus (creates /park_shm)
+# -> park-ui. board-power.service is what keeps the onboard USB hub (and thus
+# the K210 serial link) alive now that myir.service is disabled.
+After=m4-load.service core0-bus.service board-power.service multi-user.target
+Wants=m4-load.service core0-bus.service board-power.service multi-user.target
 
 [Service]
 Type=simple
-# vendor desktop cleanup: eglfs must release DRM before linuxfb can own fb0.
-# Match plain "mxapp2" (argv[0] may lack the /usr/bin prefix) and SIGKILL;
-# retry a while in case it respawns. Harmless when absent.
-ExecStartPre=/bin/sh -c 'i=0; while pgrep -f "mxapp2" >/dev/null 2>&1 && [ $i -lt 20 ]; do pkill -9 -f "mxapp2" 2>/dev/null || true; i=$((i+1)); sleep 0.5; done; true'
+# Vendor desktop cleanup: eglfs must release DRM before linuxfb can own fb0.
+# The board has NEITHER pgrep NOR pkill (procps is not installed), so the old
+# `pgrep -f` loop was a silent no-op - this /proc scan needs only sh+grep+kill.
+# Leading "-" keeps a failure here from blocking the UI start.
+ExecStartPre=-/bin/sh -c 'for p in /proc/[0-9]*; do pid=$${p#/proc/}; [ "$$pid" = "$$$$" ] && continue; case "$$(cat $$p/cmdline 2>/dev/null)" in *mxapp2*) kill -9 $$pid 2>/dev/null;; esac; done; true'
 Environment=QT_QPA_PLATFORM=linuxfb:nocursor=1:size=1024x600
 Environment=QT_QPA_FONTDIR=/usr/share/fonts
 # Pin Qt scaling off: the panel is a fixed 1024x600 and DPI-based auto scaling

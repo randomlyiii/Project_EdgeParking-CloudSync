@@ -1,0 +1,34 @@
+fix(board/core0/qt): USB Host 供电 GPIO + 闸位观测态三修 + Core1 业务写端
+
+board / deploy
+- 新增 board-power.service: 复刻厂商 /usr/bin/start.sh 的 GPIO 82(PF2)/139(PI11) 上电
+  —— disable myir.service 之后这两个脚没人管, 板载 USB HUB 断电, K210 与任何 USB
+  设备都不再枚举(这才是"硬件没变却突然没画面"的真因; GPIO 输出是保持态, 所以重启前一直正常)
+  install_all.sh 新增 [6/7] 步安装并 enable; park-ui.service After/Wants 依赖它
+- park-ui.service: mxapp2 兜底改用 /proc 扫描(板上没有 pgrep/pkill, 原来是空操作), 加 "-" 容错
+- k210_link: 打不开串口时打一次日志(原来静默重试, "无预览"分不清是设备没开还是没数据)
+- deploy/README.md: 排障补这条(判据 + 手动恢复命令 + 设备节点 /dev/ttyACM0)
+
+core0 (闸位观测态, 三条真机 bug)
+- gate_cmd 成功后以目标态作为工作态(仅 rc==0 时置, 失败不撒谎) + refresh_public
+- 新增 GATE_SETTLE_MS=1600 延迟 0x13 重同步: M4 的闸位缓存滞后于 C8T6 的 1Hz 心跳,
+  800ms 会读到上一拍 ⇒ "闸开着显示关"、之后关闸全被幂等吞
+- 新增 M4_RESYNC_PERIOD_MS=2000 周期 0x13(M4 只在被问时才答 0x23)
+- 新增 GATE_REPORT_GUARD_MS=1500 保护窗: 在途的旧 0x23 不得覆盖命令态(修"开→一瞬间关→开"闪变)
+- core0_selftest S7 补真机回归用例(命令间无自发 0x23 + 陈旧 0x23 不覆盖): 151 项 0 失败
+- G4_ACCEPTANCE: 修正 L2-6 预期(原来把 skipped: already closed 当成对的行为), 新增 L3 用例 G4-B2
+
+core1 (Qt 业务写端, 规格 .codeartsdoer/specs/core1_business)
+- 新增 ipc_writer.{h,cpp}: O_RDWR+PROT_WRITE 挂载 /park_shm v3, magic/version 自检(拒绝写入不静默),
+  1s hb_core1, 结果回写(plate/confidence/result_source/result_valid + evt RESULT),
+  低置信/失败 ⇒ cloud_pending(不置 result_valid), req_gate_open/close 脉冲, 200ms 消费 evt_c0
+- mainwindow: 底栏触屏「开闸/关闸」按钮(板端无键盘) + O/C 热键 + CLOUD:兜底中 芯片
+- ipc_reader: 快照新增 cloudPending; onTick 提升为 public slot(供写端事件触发立即刷新)
+- check_static.py: 新增写端签名检查 + "绝不写 Core0 归属字段" 负向断言 + 消费者清位断言 (PASS)
+
+docs
+- AGENTS.md: 瘦身归档(docs/AGENTS_history.md) + 本轮全部板验结论与踩坑
+- PhaseMd/07: P6-01/02 标代码完成, P6-04 标代码就绪(待板端复验)
+
+板验(2026-09-11): 触摸开关闸双向动作正常 + 闸位状态跟随无闪变; LCD 上 M4<->C8T6 互动正常;
+USB HUB/CH9102/预览恢复并已跨重启验证(board-power active(exited), /dev/ttyACM0 就位)

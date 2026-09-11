@@ -25,6 +25,7 @@ struct IpcSnapshot
     int usedSlots = 0;
     bool gateOpen = false;
     bool recogPending = false;
+    bool cloudPending = false;  /* core1 write-end: cloud fallback in flight */
     quint8 linkFlags = 0;       /* bit0 rpmsg bit1 m4 bit2 core1 */
     QString plate;              /* persistent last plate (may be empty) */
     double confidence = 0.0;
@@ -52,8 +53,11 @@ signals:
     void platePopup(const QString &plate, double confidence, int source,
                     bool deny);
 
-private slots:
+public slots:
+    /* refresh now (wired from IpcWriter's snapshotRefreshRequested) */
     void onTick();
+
+private slots:
     void onEventfd();
 
 private:

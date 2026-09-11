@@ -14,6 +14,7 @@
  */
 #include <QMainWindow>
 #include <QImage>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QShowEvent>
 #include <QTimer>
@@ -23,6 +24,7 @@
 #include "ipc_reader.h"
 
 class K210Link;
+class QPushButton;
 
 enum CloudState { Unknown, Online, Offline };
 
@@ -33,6 +35,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     void setLink(K210Link *link) { m_link = link; }
     void setIpc(IpcReader *ipc) { m_ipc = ipc; }
+
+signals:
+    void gateRequested(bool open);   /* open=true open gate, false close */
 
 public slots:
     void pushEvent(const QString &line);
@@ -45,9 +50,11 @@ public slots:
     void onRecogResult(const QString &plate, double confidence, int source);
     void onRecogFailed(const QString &reason);
     void onK210Busy(bool busy);
+    void onCloudPending(bool pending);
 
 protected:
     void showEvent(QShowEvent *e) override;   /* logs the real window size */
+    void keyPressEvent(QKeyEvent *e) override; /* gate open/close hotkeys */
 
 private slots:
     void onFrameTick();     /* 100 ms: pull newest decoded frame */
@@ -90,6 +97,9 @@ private:
     /* --- bottom bar --- */
     QLabel *m_lblGate = nullptr;
     QLabel *m_lblEvents = nullptr;
+    /* operator gate trigger (spec 5.6): buttons emit gateRequested() */
+    QPushButton *m_btnGateOpen = nullptr;
+    QPushButton *m_btnGateClose = nullptr;
 
     /* --- popup card --- */
     QWidget *m_popup = nullptr;

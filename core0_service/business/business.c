@@ -17,6 +17,26 @@
 
 #define HB_CHECK_PERIOD_MS   3000u   /* spec 5.6.1.1 */
 #define HB_LOST_AFTER_MS     3000u   /* no change for 3s -> lost */
+/* after a gate command, wait before asking the M4 for the real state
+ * (spec 6.3). The C8T6 reports its status on a 1Hz heartbeat, so the M4's
+ * cached view can lag up to ~1.2s after a move (SG90 travel ~0.2s + one
+ * heartbeat): querying earlier returns the PREVIOUS position and the
+ * idempotency check then latches the wrong state. Hardware finding
+ * 2026-09-11: "CLOSE 之后 M4 回 OPEN、OPEN 之后 M4 回 CLOSED"，随后
+ * "闸开着但 UI 显示关、关闸被幂等吞掉". */
+#define GATE_SETTLE_MS        1600u
+/* A 0x23 answer can be in flight when the operator commands the gate (the
+ * periodic/edge resync fires every 2s), and it carries the PRE-command
+ * position. Applying it would flip the UI back for a moment - the
+ * "开 -> 一瞬间关 -> 开" flicker found on hardware 2026-09-11. Inside this
+ * guard window the gate value of a report is ignored (node/err are still
+ * taken); the settle query is sent after GATE_SETTLE_MS > guard, so its
+ * answer is accepted. */
+#define GATE_REPORT_GUARD_MS  1500u
+/* The M4 answers 0x23 only when asked, so Core0 must poll it: this slow
+ * refresh is what keeps gate_state / node_online / can_err honest when
+ * nothing else is happening (and self-heals a missed or stale answer). */
+#define M4_RESYNC_PERIOD_MS   2000u
 
 const char *biz_state_name(biz_state_t s)
 {
@@ -49,9 +69,11 @@ struct biz {
     uint8_t     last_source;
 
     /* gate */
-    uint8_t     gate_state;        /* observed, from M4 0x23 */
+    uint8_t     gate_state;        /* observed: own command, corrected by 0x23 */
     uint8_t     last_cmd;          /* 0 none, 1 open, 2 close */
     int64_t     last_cmd_ms;
+    int64_t     gate_query_at;     /* deferred 0x13 resync after a command */
+    int64_t     m4_resync_at;      /* slow periodic 0x13 while the link is up */
 
     /* slots / passage */
     int32_t     used;
@@ -205,11 +227,20 @@ static int gate_cmd(biz_t *b, int open, const char *source)
     }
     b->last_cmd = open ? 1u : 2u;
     b->last_cmd_ms = b->now;
+    /* The M4 only reports gate state on 0x23 (query answer), so the
+     * "observed" field stays stale right after our own command. Without
+     * updating it here a following CLOSE would hit the dedup below
+     * ("gate already closed (observed)") and never reach the C8T6. Take the
+     * commanded target as the working state and resync from M4 once the
+     * mechanics have settled (spec 6.3: corrected by M4 / actual hardware). */
+    b->gate_state = target;
+    b->gate_query_at = b->now + (int64_t)GATE_SETTLE_MS;
     LOGI("gate", "%s command sent (source=%s)",
          open ? "OPEN 0x11" : "CLOSE 0x12", source);
     store_gate(open ? "open" : "close", source);
     if (open)
         b->pass_pending = 1;   /* a passage may follow, counted on clear */
+    refresh_public(b);
     return 0;
 }
 
@@ -332,8 +363,17 @@ static void on_m4_state(biz_t *b, const biz_event_t *ev)
 {
     uint8_t old_gate = b->gate_state;
     uint8_t old_node = b->node_online;
+    int gate_trusted = 1;
 
-    b->gate_state  = ev->b0 ? 1u : 0u;
+    /* ignore a gate value that could predate our own command (see
+     * GATE_REPORT_GUARD_MS): the commanded target stays the working state */
+    if (b->last_cmd_ms != 0 &&
+        (b->now - b->last_cmd_ms) < (int64_t)GATE_REPORT_GUARD_MS)
+        gate_trusted = 0;
+
+    b->gate_query_at = 0;            /* fresh authoritative report arrived */
+    if (gate_trusted)
+        b->gate_state  = ev->b0 ? 1u : 0u;
     b->node_online = ev->b1 ? 1u : 0u;
     b->can_err     = ev->u16;
 
@@ -491,6 +531,25 @@ void biz_periodic(biz_t *b, int64_t now_ms, const biz_poll_in_t *in)
                  "stays available)");
             enter_deny(b, "recognition timeout");
         }
+    }
+
+    /* ---- M4 state resync (spec 6.3) ----
+     * The M4 only answers 0x23 when asked, so without polling Core0 would
+     * keep whatever the last answer said (hardware finding 2026-09-11).
+     * Two triggers: right after our own command (settle delay, so the C8T6's
+     * 1Hz heartbeat has carried the new position) and a slow periodic
+     * refresh, which also self-heals an external change / missed report. */
+    if (b->plat.query_state != NULL &&
+        b->gate_query_at != 0 && b->now >= b->gate_query_at) {
+        b->gate_query_at = 0;
+        b->m4_resync_at = b->now + (int64_t)M4_RESYNC_PERIOD_MS;
+        LOGI("gate", "gate settle: querying M4 for observed state");
+        b->plat.query_state(b->plat.ctx);
+    } else if (b->link_up && b->plat.query_state != NULL &&
+               (b->m4_resync_at == 0 || b->now >= b->m4_resync_at)) {
+        b->m4_resync_at = b->now + (int64_t)M4_RESYNC_PERIOD_MS;
+        LOGD("m4", "periodic state resync (0x13)");
+        b->plat.query_state(b->plat.ctx);
     }
 
     /* ---- cooldown expiry ---- */

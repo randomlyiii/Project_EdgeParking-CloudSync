@@ -41,7 +41,7 @@ pick() {
     return 1
 }
 
-echo "[1/6] resolve sources"
+echo "[1/7] resolve sources"
 CORE0_BIN=$(pick "${CORE0_SRC:-}" ./core0_business /root/core0_business \
                  /root/core0_service/core0_business) || true
 CONF=$(pick ./core0.conf /root/core0.conf /root/core0_service/core0.conf \
@@ -62,7 +62,7 @@ echo "  load_m4.sh     : ${LOADM4:-<not found>}"
 echo "  link_test.py   : ${LINKTEST:-<not found>}"
 echo "  M4 elf         : ${M4ELF:-<not found, keep existing $FW_DST>}"
 
-echo "[2/6] install core0 ($CORE0_DST)"
+echo "[2/7] install core0 ($CORE0_DST)"
 mkdir -p "$CORE0_DST/tools"
 if [ -n "$CORE0_BIN" ]; then
     cp "$CORE0_BIN" "$CORE0_DST/core0_business"
@@ -87,7 +87,7 @@ fi
 [ -n "$LINKTEST" ] && cp "$LINKTEST" "$CORE0_DST/tools/rpmsg_link_test.py" && chmod +x "$CORE0_DST/tools/rpmsg_link_test.py"
 [ -n "$LOADM4" ] || INSTALL_M4=0
 
-echo "[3/6] install park_ui ($UI_DST)"
+echo "[3/7] install park_ui ($UI_DST)"
 if [ -n "$UI_BIN" ]; then
     mkdir -p /opt/park_ui
     cp "$UI_BIN" "$UI_DST"
@@ -97,7 +97,7 @@ else
     INSTALL_UI=0
 fi
 
-echo "[4/6] install M4 firmware"
+echo "[4/7] install M4 firmware"
 if [ -n "$M4ELF" ]; then
     cp "$M4ELF" "$FW_DST"
     echo "  installed $FW_DST"
@@ -109,8 +109,12 @@ else
     INSTALL_M4=0
 fi
 
-echo "[5/6] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
+echo "[5/7] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
 if systemctl list-unit-files 2>/dev/null | grep -q '^myir.service'; then
+    # NOTE: /usr/bin/start.sh (run by myir.service) also drove the two board
+    # power-rail GPIOs high. Disabling the HMI therefore also killed the onboard
+    # USB hub -> the K210 never enumerated. board-power.service replicates those
+    # two writes, so both must always be installed together (step [6/7]).
     systemctl disable --now myir.service 2>/dev/null || true
     echo "  myir.service disabled and stopped"
 else
@@ -118,7 +122,13 @@ else
 fi
 pkill -9 -f "mxapp2" 2>/dev/null || true
 
-echo "[6/6] install systemd units"
+echo "[6/7] board power rails (USB host VBUS / onboard hub enable)"
+cp "$DIR/board-power.service" /etc/systemd/system/board-power.service
+systemctl enable board-power.service
+systemctl start board-power.service 2>/dev/null || true
+echo "  enabled board-power.service (GPIO 82/PF2 + 139/PI11 high)"
+
+echo "[7/7] install systemd units"
 # always ship park-ui.service (it is also the UI-only entry point)
 cp "$DIR/park-ui.service" /etc/systemd/system/park-ui.service
 systemctl daemon-reload

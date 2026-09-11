@@ -90,8 +90,19 @@ CORE0_SRC=/path/core0_business  UI_SRC=/path/park_ui  M4_FW=/path/m4_fw.elf
   ps -ef | grep -iE 'qt|demo|eglfs|weston|mxapp'
   systemctl disable --now myir.service && systemctl restart park-ui
   ```
-- **K210 只有 UI 没有画面**：`ls -l /dev/ttyACM0`；K210 端 `main.py` 需在跑
-  （`LINK="console"`、`CONSOLE_PREVIEW=1`）。UI 方向已定案为「不做任何翻转」
+- **K210 只有 UI 没有画面 / 任何 USB 设备都不认（2026-09-11 定案）**：
+  `lsusb` 里只有三个 `1d6b:` root hub、`/dev/ttyACM*` 不存在 ⇒ **板载 USB HUB 没上电**。
+  根因：`/usr/bin/start.sh`（`myir.service` 跑的）除了启 mxapp2，还会把 **GPIO 82(PF2) 与
+  139(PI11) 拉高**给 USB Host 供电/HUB 使能；我们 `disable --now myir.service` 后这两个脚
+  就没人管了（GPIO 输出是保持态，所以"重启前一直好好的、重启后突然不行"）。
+  → `board-power.service` 就是复刻这两条写操作，**它必须和 myir 的禁用一起装**（`install_all.sh`
+  的 `[5/7]`+`[6/7]` 两步）。手动验证：`for g in 82 139; do echo $g > /sys/class/gpio/export;
+  echo out > /sys/class/gpio/gpio$g/direction; echo 1 > /sys/class/gpio/gpio$g/value; done`，
+  然后 `lsusb` 应出现 `0424:2514`(HUB) + `1a86:55d4`(K210 CH9102 串口)。
+  另外：**本板没有 `pgrep`/`pkill`**，unit 里杀 mxapp2 已改为 `/proc` 扫描。
+- **K210 预览链路**：设备节点 `/dev/ttyACM0`（CH9102 走 cdc_acm；可用 `/etc/park-ui.env` 的
+  `PARK_UI_TTY=` 覆盖）。K210 端 `main.py` 需在跑（`LINK="console"`、`CONSOLE_PREVIEW=1`），
+  且**必须用 CanMV IDE「保存到设备」**（点"运行"不写盘）。UI 方向已定案为「不做任何翻转」
   （固件 `CAM_SW_HMIRROR=True` 一处修正同时修好两个屏）。
 - **两个进程抢 `/dev/ttyRPMSG0`**：同一时刻只能有一个读者（core0_business 或
   rpmsg_demo 或 rpmsg_link_test.py）。跑检测脚本前先 `systemctl stop core0-bus`。

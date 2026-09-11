@@ -7,6 +7,7 @@
 #include <QVBoxLayout>
 #include <QFont>
 #include <QPalette>
+#include <QPushButton>
 #include <QScreen>
 
 /* Chinese UI literals as UTF-8 escapes: keeps every source file pure ASCII
@@ -29,6 +30,8 @@
 #define TXT_OFFLINE  "\xE7\xA6\xBB\xE7\xBA\xBF"                                   /* offline       */
 #define TXT_FAULT    "\xE6\x95\x85\xE9\x9A\x9C"                                   /* fault         */
 #define TXT_DEMO     "\xE6\xBC\x94\xE7\xA4\xBA"                                   /* demo          */
+#define TXT_GATECL   "\xE5\x85\xB3\xE9\x97\xB8"                                   /* close gate    */
+#define TXT_CLOUDBUSY "\xE5\x85\x9C\xE5\xBA\x95\xE4\xB8\xAD"                      /* fallback busy */
 
 static QLabel *statusChip(QWidget *parent)
 {
@@ -85,6 +88,22 @@ void MainWindow::showEvent(QShowEvent *e)
         logged = true;
         qWarning("display: visible window=%dx%d+%d+%d state=0x%x",
                  width(), height(), x(), y(), unsigned(windowState()));
+    }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *e)
+{
+    /* pluggable gate-control input source (core1 spec 5.6.1.3): O/C hotkeys
+     * here, the two on-screen buttons below, and external tools writing the
+     * shm pulse field directly. Every source goes through gateRequested() and
+     * the same req_gate_open/close pulse semantics; IpcWriter logs the write
+     * so the action is auditable regardless of the source. */
+    if (e->key() == Qt::Key_O) {
+        emit gateRequested(true);
+    } else if (e->key() == Qt::Key_C) {
+        emit gateRequested(false);
+    } else {
+        QMainWindow::keyPressEvent(e);
     }
 }
 
@@ -189,9 +208,34 @@ void MainWindow::buildUi()
     m_lblGate->setStyleSheet("QLabel{color:#cfd8dc;font-size:15px;}");
     m_lblEvents = new QLabel(bottom);
     m_lblEvents->setStyleSheet("QLabel{color:#90a4ae;font-size:14px;}");
+
+    /* operator trigger source (core1 spec 5.6.1.3): the board has no keyboard,
+     * so the gate buttons are the primary source; touch arrives as a mouse
+     * click through libinput. They only request - Core0 decides and executes. */
+    m_btnGateOpen = new QPushButton(QString(TXT_GATEOP), bottom);
+    m_btnGateOpen->setFixedSize(96, 32);
+    m_btnGateOpen->setFocusPolicy(Qt::NoFocus);
+    m_btnGateOpen->setStyleSheet(
+        "QPushButton{background:#1b5e20;color:#e8f5e9;font-size:16px;"
+        "border:1px solid #2e7d32;border-radius:6px;}"
+        "QPushButton:pressed{background:#2e7d32;}");
+    m_btnGateClose = new QPushButton(QString(TXT_GATECL), bottom);
+    m_btnGateClose->setFixedSize(96, 32);
+    m_btnGateClose->setFocusPolicy(Qt::NoFocus);
+    m_btnGateClose->setStyleSheet(
+        "QPushButton{background:#4e342e;color:#efebe9;font-size:16px;"
+        "border:1px solid #6d4c41;border-radius:6px;}"
+        "QPushButton:pressed{background:#6d4c41;}");
+    connect(m_btnGateOpen, &QPushButton::clicked, this,
+            [this]() { emit gateRequested(true); });
+    connect(m_btnGateClose, &QPushButton::clicked, this,
+            [this]() { emit gateRequested(false); });
+
     bb->addWidget(m_lblGate);
     bb->addStretch(1);
     bb->addWidget(m_lblEvents, 1);
+    bb->addWidget(m_btnGateOpen);
+    bb->addWidget(m_btnGateClose);
     root->addWidget(bottom);
 
     /* ---------- popup card (child of preview box, centered) ---------- */
@@ -319,6 +363,15 @@ void MainWindow::onRecogFailed(const QString &reason)
     pushEvent(QString("recog failed: %1").arg(reason));
 }
 
+void MainWindow::onCloudPending(bool pending)
+{
+    /* write-end feedback only: the chip itself follows the shm field (single
+     * source of truth, core1 spec 5.8.3), which the reader polls <=200ms */
+    pushEvent(pending ? QStringLiteral("cloud fallback in progress")
+                      : QStringLiteral("cloud fallback done"));
+    applyCloudChip();
+}
+
 /* --------------------------- snapshot apply --------------------------- */
 
 static void setChip(QLabel *chip, const QString &name, bool ok,
@@ -413,6 +466,15 @@ void MainWindow::applyCloudChip()
     if (demo) {
         m_lblCloud->setText("CLOUD:OK");
         m_lblCloud->setStyleSheet("QLabel{color:#69f0ae;font-size:14px;}");
+        return;
+    }
+    /* step 6: cloud fallback in flight (Core1 write-end raises cloud_pending,
+     * Core0 mirrors it in shm). The shm field is the single source of truth. */
+    const IpcSnapshot snap = m_ipc ? m_ipc->snapshot() : IpcSnapshot();
+    if (snap.shmOnline && snap.cloudPending) {
+        m_lblCloud->setText(QString("CLOUD:") +
+                            QString::fromUtf8(TXT_CLOUDBUSY));
+        m_lblCloud->setStyleSheet("QLabel{color:#ffab40;font-size:14px;}");
         return;
     }
     switch (m_cloudState) {

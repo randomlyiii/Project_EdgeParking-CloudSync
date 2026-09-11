@@ -381,6 +381,50 @@ static void s7_remote_dedup(void)
     post(b, &fk, BIZ_EV_REQ_GATE_CLOSE, 700500);      /* already closed */
     CHECK(fk.gate_close_calls == 1);
 
+    /* --- board-found regression (2026-09-11) ---
+     * On real hardware the M4 answers 0x23 only when asked, so no report
+     * follows our own command: the "observed" state stayed stale and a CLOSE
+     * right after OPEN was deduped away as "gate already closed" - the 0x12
+     * never reached the C8T6 (symptom: touch "close" did nothing). The
+     * commanded target is now the working state, and a deferred 0x13 resync
+     * refreshes it from the M4 once the mechanics settle (spec 6.3). */
+    biz_destroy(b);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 710000, 0);
+
+    post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 710000);
+    CHECK(fk.gate_open_calls == 1);
+    CHECK(fk.pub.gate_state == 1);                    /* working state = cmd */
+
+    /* a 0x23 generated BEFORE our command (in-flight answer to an earlier
+     * periodic/edge resync) carries the old position and must not undo the
+     * command: that was the "开 -> 一瞬间关 -> 开" flicker on hardware */
+    post_m4(b, 0, 1, 0, 710400);
+    CHECK(fk.pub.gate_state == 1);                    /* guard kept the cmd */
+
+    post(b, &fk, BIZ_EV_REQ_GATE_CLOSE, 710500);      /* no valid 0x23 yet */
+    CHECK(fk.gate_close_calls == 1);                  /* must not be deduped */
+    CHECK(fk.query_calls == 0);                       /* nothing queried yet */
+    periodic_alive(b, &fk, 711500, 0);                /* < 710500 + 1600ms */
+    CHECK(fk.query_calls == 0);                       /* settle not due yet */
+    periodic_alive(b, &fk, 712200, 0);                /* > 710500 + 1600ms */
+    CHECK(fk.query_calls == 1);                       /* deferred resync out */
+
+    /* a late authoritative answer (after the guard) is applied */
+    post_m4(b, 1, 1, 0, 712500);
+    CHECK(fk.pub.gate_state == 1);
+
+    /* slow periodic resync while the link is up: keeps gate_state honest
+     * even with no command and no spontaneous 0x23 from the M4 */
+    {
+        int q0;
+        post_link(b, 1, 712600);                      /* on_link resyncs once */
+        q0 = fk.query_calls;
+        periodic_alive(b, &fk, 714300, 0);            /* > 712200 + 2000ms */
+        CHECK(fk.query_calls == q0 + 1);
+    }
+
     biz_destroy(b);
 }
 

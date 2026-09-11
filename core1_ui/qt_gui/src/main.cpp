@@ -3,6 +3,7 @@
 #include <QFont>
 
 #include "ipc_reader.h"
+#include "ipc_writer.h"
 #include "k210_link.h"
 #include "mainwindow.h"
 
@@ -67,6 +68,8 @@ int main(int argc, char *argv[])
 
     IpcReader ipc;
     win.setIpc(&ipc);
+
+    IpcWriter writer;
     QObject::connect(&ipc, &IpcReader::snapshotChanged,
                      &win, &MainWindow::onSnapshot);
     QObject::connect(&ipc, &IpcReader::eventMessage,
@@ -81,14 +84,32 @@ int main(int argc, char *argv[])
                      &win, &MainWindow::onRecogFailed);
     QObject::connect(&link, &K210Link::busyChanged,
                      &win, &MainWindow::onK210Busy);
+    /* Core1 business write-end: K210 results -> shm, UI gate hotkeys -> pulse */
+    QObject::connect(&link, &K210Link::recogResult,
+                     &writer, &IpcWriter::onRecogResult);
+    QObject::connect(&link, &K210Link::recogFailed,
+                     &writer, &IpcWriter::onRecogFailed);
+    QObject::connect(&win, &MainWindow::gateRequested, &writer,
+                     [&writer](bool open) {
+                         if (open) writer.requestGateOpen();
+                         else      writer.requestGateClose();
+                     });
+    QObject::connect(&writer, &IpcWriter::eventMessage,
+                     &win, &MainWindow::pushEvent);
+    QObject::connect(&writer, &IpcWriter::cloudPendingChanged,
+                     &win, &MainWindow::onCloudPending);
+    QObject::connect(&writer, &IpcWriter::snapshotRefreshRequested,
+                     &ipc, &IpcReader::onTick);
 
     ipc.start(demoMode, evtFd);
+    writer.start();
     link.start(dev, baud, mode, file);
 
     win.show();
     const int rc = app.exec();
 
     link.stop();
+    writer.stop();
     ipc.stop();
     return rc;
 }

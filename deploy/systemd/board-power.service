@@ -1,0 +1,23 @@
+[Unit]
+Description=EdgeParking board power rails (USB host VBUS / onboard hub enable)
+# The vendor HMI unit (myir.service -> /usr/bin/start.sh) also drove two GPIOs
+# high at boot. park_ui has to own the panel, so myir.service is disabled - and
+# without those GPIOs the onboard USB hub (0424:2514) and everything behind it
+# (K210 CH9102 serial, USB sticks, USB Ethernet) never enumerate at all.
+# Replicated here so the USB side keeps working WITHOUT resurrecting mxapp2.
+#
+# Found on hardware 2026-09-11: with the rails off, `lsusb` showed only the
+# three root hubs and /dev/ttyUSB* never appeared; after `echo 1 > value` for
+# both pins the K210 came up immediately and park_ui reconnected on its own.
+After=sysinit.target
+Before=m4-load.service core0-bus.service park-ui.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 82 = PF2, 139 = PI11 (Linux global GPIO numbers); echoing an already exported
+# pin fails harmlessly, so this is idempotent and safe to re-run.
+ExecStart=/bin/sh -c 'for g in 82 139; do echo $g > /sys/class/gpio/export 2>/dev/null; echo out > /sys/class/gpio/gpio$g/direction; echo 1 > /sys/class/gpio/gpio$g/value; done'
+
+[Install]
+WantedBy=multi-user.target

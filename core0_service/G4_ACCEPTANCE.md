@@ -109,7 +109,7 @@ cd /root/c0 && ./core1_stub
 | L2-3 故障字可见 | `p` 看 `fault=0x..` | `fault` 含 **0x04**；`link` 的 bit2（core1-online）为 0 | shm 字段与日志一致 |
 | L2-4 心跳恢复 | 再敲 `h`（开心跳） | `[watchdog] core1 heartbeat alive again`，`p` 里 fault 清掉 bit2 | 无人工干预自愈 |
 | L2-5 远程开闸请求 | `o` | `[remote] gate open request from core1 (ui)`，随后（离线时）`[gate] OPEN 0x11 command send failed (rpmsg down?)` | 请求被消费（脉冲自清零，`p` 不再重复触发） |
-| L2-6 关闸 + 观测态幂等 | `c` | `[remote] gate close request from core1 (ui)` + `[gate] CLOSE 0x12 skipped: gate already closed (observed)` | 观测态幂等生效（离线时 M4 不上报闸位，故走"已关"分支） |
+| L2-6 关闸（观测态工作态） | `c` | `[remote] gate close request from core1 (ui)` + `[gate] CLOSE 0x12 command sent (source=ui)`（若 RPMSG 不在则 `command send failed (rpmsg down?)`），约 1.6s 后 `[gate] gate settle: querying M4 for observed state` | **2026-09-11 改**：原来期望的 `CLOSE 0x12 skipped: gate already closed (observed)` 是 bug——M4 只在被查询时答 0x23，命令后 `gate_state` 会一直停在旧值，导致远程关闸永远被幂等吞掉（真机现象："开闸有反应、关闸没反应"）。现在**指令成功即把目标态作为工作态**，并在 `GATE_SETTLE_MS=1600ms`（**必须 > C8T6 的 1Hz 心跳 + SG90 0.2s 行程**，否则读到的是上一拍的位置——真机实证过 800ms 会读到反的）后补发 0x13 校正；另每 `M4_RESYNC_PERIOD_MS=2000ms` 周期重同步，保证无命令时闸位/节点态也会自愈 |
 | L2-7 配置热加载 | 编辑 `core0.conf` 把 `total_slots = 20` 改成 `5` 保存 | ≤500ms 内（tick 200ms）`[config] hot reload done: ok` + `[config] config applied: slots=5 ...` | ≤500ms KPI；`p` 里 `free` 同步变化 |
 | L2-8 日志级别 | 另起一次 `./core0_business -c core0.conf -l warn` | 只有 WARN/ERROR，无 INFO | 级别过滤生效 |
 | L2-9 存储开关 | 用 `-DENABLE_STORAGE=1` 编的版本 + `storage_dir = /root/c0` | 生成 `/root/c0/events.log`、`/root/c0/gate_log` | 默认关版本不生成任何文件 |
@@ -156,8 +156,9 @@ cd /root/c0 && ./core0_business -c core0.conf &     # 期望 [rpmsg] link UP
 | 编号 | 操作 | 期望日志序列 | 通过判据 |
 |---|---|---|---|
 | G4-A 车到位 | 手遮 C8T6 的 BH1750 ≥1s 后松手 | `[shade] car arrival observed (CAN 0x200 d0=0x01)` → `[state] IDLE -> CAR_WAIT (shade event 0x200 d0=0x01)` → `[state] CAR_WAIT -> RECOGNIZING (recog_pending=1, trigger 0x01 sent)`；3s 后 `[recog] recognition timeout: downgrade path (ui open stays available)` → `[state] RECOGNIZING -> DENY (recognition timeout)` → `[state] DENY -> COOL_DOWN (after deny)` | 全边有日志、3s±0.5s 降级（DENY 为瞬时态，紧接 COOL_DOWN 属正常） |
-| G4-B 识别失效不阻塞开闸 | 紧跟 G4-A，stub 敲 `o` | `[remote] gate open request from core1 (ui)` → `[gate] OPEN 0x11 command sent (source=ui)` → **SG90 抬起**，C8T6 OLED 行3 `Gate:OPEN` | 开闸成功（KPI ≤500ms）；`p` 里 gate=OPEN |
-| G4-C 白名单放行 | **先 `c` 关闸并等 M4 上报闸位闭合**，再手遮，`[state] RECOGNIZING` 时敲 `r TEST001 0.95` | `[ipc] recognition result: 'TEST001' conf=0.95 src=edge` → `[state] RECOGNIZING -> WHITELIST_CHECK ...` → `GATE_OPEN` → `[gate] OPEN 0x11 command sent (source=auto)` | SG90 动作、`p` 里 plate=TEST001 |
+| G4-B 识别失效不阻塞开闸 | 紧跟 G4-A，敲 `o`（真机=park_ui 触摸「开闸」） | `[remote] gate open request from core1 (ui)` → `[gate] OPEN 0x11 command sent (source=ui)` → **SG90 抬起**，C8T6 OLED 行3 `Gate:OPEN` | 开闸成功（KPI ≤500ms）；`p` 里 gate=OPEN |
+| G4-B2 远程关闸（2026-09-11 补） | 紧接 G4-B，敲 `c`（真机=触摸「关闸」） | `[remote] gate close request from core1 (ui)` → `[gate] CLOSE 0x12 command sent (source=ui)` → **SG90 落下**，C8T6 行3 `Gate:CLOSE`；约 1.6s 后 `[gate] gate settle: querying M4 for observed state` → `[m4] gate state now CLOSED (M4 report)` | 关闸真的执行（回归项：此前会被"观测态已关"幂等吞掉）；**再点一次「开闸」时 UI 必须先显示"开"再被 1.6s 后的回报确认，不得出现"闸开着显示关"、也不得出现"开→一瞬间关→开"的闪变**（命令后 1.5s 内的陈旧 0x23 必须被 `GATE_REPORT_GUARD_MS` 丢弃） |
+| G4-C 白名单放行 | **先 `c` 关闸（约 1s 后 M4 自动回报闸位闭合）**，再手遮，`[state] RECOGNIZING` 时敲 `r TEST001 0.95` | `[ipc] recognition result: 'TEST001' conf=0.95 src=edge` → `[state] RECOGNIZING -> WHITELIST_CHECK ...` → `GATE_OPEN` → `[gate] OPEN 0x11 command sent (source=auto)` | SG90 动作、`p` 里 plate=TEST001 |
 | G4-D 白名单拒绝 | 手遮后敲 `r TEST002 0.95` | `[whitelist] plate 'TEST002' rejected: entry not allowed` → `[state] ... -> DENY (entry not allowed)` | **不开闸**，DENY 留痕（`p` 里仍显示该车牌） |
 | G4-E 过期拒绝 | 手遮后敲 `r TEST003 0.95` | `[whitelist] plate 'TEST003' rejected: whitelist entry expired` | 不开闸 |
 | G4-F 云兜底延时 | 手遮后立刻敲 `k`（cloud_pending=1） | `[recog] cloud fallback pending: timeout extended to 6000ms`；3s 时**不**降级，6s 才降级 | 6s±0.5s 降级 |
