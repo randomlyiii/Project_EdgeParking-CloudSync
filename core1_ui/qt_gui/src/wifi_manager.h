@@ -57,6 +57,16 @@ public:
 public slots:
     void refresh();                                   /* cheap, call every 2s */
     void scan();                                      /* async, may be empty */
+    /* Run the vendor recipe against the CURRENT configuration - no file write
+     * and no rollback: `ip link set wlan0 up` -> `wpa_supplicant -B -D nl80211`
+     * -> `udhcpc`. This is the LCD equivalent of typing those three commands by
+     * hand, e.g. when a board came up before wifi-up.service existed. */
+    void bringUp();
+    /* Persist SSID/PSK to /etc/wpa_supplicant.conf WITHOUT touching the running
+     * link: same file layout as the vendor file (ctrl_interface /
+     * update_config / ap_scan + one network block), no apply, no rollback.
+     * CONNECT = save + apply; this is the "just write my edit" action. */
+    void saveConfig(const QString &ssid, const QString &psk);
     void connectTo(const QString &ssid, const QString &psk);
     void disconnectFrom();
     void restoreBackup();
@@ -102,6 +112,7 @@ private:
     QString m_iface = QStringLiteral("wlan0");
     WifiStatus m_st;
     bool m_busy = false;          /* an apply is in flight */
+    bool m_bringUp = false;       /* the running script is a plain bring-up */
     bool m_rollbackArmed = false;
     QTimer m_watchdog;            /* 2s tick while waiting for a lease */
     QTimer m_deadline;            /* 20s hard limit */

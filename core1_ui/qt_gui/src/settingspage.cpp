@@ -5,6 +5,7 @@
 #include "wifi_manager.h"
 
 #include <QCheckBox>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QGridLayout>
@@ -15,6 +16,7 @@
 #include <QListWidget>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QShowEvent>
 #include <QSslSocket>
 #include <QTabWidget>
@@ -51,6 +53,11 @@
                       "\xE7\xA4\xBA"                                     /* fake demo */
 #define TXT_OUTAGE    "\xE6\x96\xAD\xE7\xBD\x91\xE6\xBC\x94\xE7\xBB\x83" /* outage    */
 #define TXT_REFRESH   "\xE5\x88\xB7\xE6\x96\xB0"                         /* shua xin  */
+#define TXT_NETUP     "\xE8\x81\x94\xE7\xBD\x91"                         /* lian wang  */
+#define TXT_TIME      "\xE6\x97\xB6\xE9\x97\xB4"                         /* shi jian   */
+#define TXT_SYNC      "\xE5\x90\x8C\xE6\xAD\xA5"                         /* tong bu    */
+#define TXT_SETTIME   "\xE6\x94\xB9\xE6\x97\xB6\xE9\x97\xB4"             /* gai shi jian */
+#define TXT_SAVENET   "\xE4\xBF\x9D\xE5\xAD\x98"                         /* bao cun   */
 #define TXT_STATE     "\xE7\x8A\xB6\xE6\x80\x81"                         /* zhuang tai*/
 #define TXT_SERVICES  "\xE6\x9C\x8D\xE5\x8A\xA1"                         /* fu wu     */
 #define TXT_DEVICES   "\xE8\xAE\xBE\xE5\xA4\x87"                         /* she bei   */
@@ -320,8 +327,24 @@ QWidget *SettingsPage::buildWifiTab()
     v->addLayout(g);
 
     QHBoxLayout *act = new QHBoxLayout();
+    /* "NETUP" button: run the vendor three-step recipe against the current
+     * config (ip link up -> wpa_supplicant -B -> udhcpc) without writing the
+     * file. Same as typing those commands by hand on a board that booted
+     * before wifi-up.service existed, or when the boot sync failed. */
+    m_btnNetUp = mkButton(QString::fromUtf8(TXT_NETUP), w, "#00695c");
+    connect(m_btnNetUp, &QPushButton::clicked, this, [this]() {
+        m_wifi->bringUp();
+    });
     m_btnConnect = mkButton(QString::fromUtf8(TXT_CONNECT), w, "#1b5e20");
     connect(m_btnConnect, &QPushButton::clicked, this, &SettingsPage::onConnect);
+    /* SAVE = write ssid/psk to /etc/wpa_supplicant.conf only (vendor layout:
+     * the three global options + one network block). CONNECT writes AND
+     * applies, and rolls the file back if the new network never leases - so
+     * use SAVE when the file itself is what you meant to change. */
+    QPushButton *bSaveNet = mkButton(QString::fromUtf8(TXT_SAVENET), w,
+                                     "#37474f");
+    connect(bSaveNet, &QPushButton::clicked, this,
+            &SettingsPage::onSaveNetwork);
     QPushButton *bDisc = mkButton(QString::fromUtf8(TXT_DISCONN), w, "#4e342e");
     connect(bDisc, &QPushButton::clicked, this, [this]() {
         m_wifi->disconnectFrom();
@@ -335,7 +358,9 @@ QWidget *SettingsPage::buildWifiTab()
                                      "#33691e");
     connect(bRestore, &QPushButton::clicked, this,
             [this]() { m_wifi->restoreBackup(); });
+    act->addWidget(m_btnNetUp);
     act->addWidget(m_btnConnect);
+    act->addWidget(bSaveNet);
     act->addWidget(bDisc);
     act->addWidget(bScan);
     act->addWidget(bRestore);
@@ -390,6 +415,26 @@ QWidget *SettingsPage::buildDiagTab()
     m_lblDiagDev->setStyleSheet(QStringLiteral("QLabel{color:#cfd8dc;"
                                                "font-size:16px;}"));
     v->addWidget(m_lblDiagDev);
+
+    /* Clock row: this board has no RTC, so the year is whatever the last sync
+     * left behind - and a 2020 clock makes every HTTPS request fail with
+     * "certificate is not yet valid". SYNC = the same HTTP-Date helper the
+     * park-clock.service runs; SET = type the time by hand (soft keyboard). */
+    v->addWidget(mkCap(w, QString::fromUtf8(TXT_TIME)));
+    QHBoxLayout *ch = new QHBoxLayout();
+    m_lblClock = mkVal(w, QString());
+    m_lblClock->setStyleSheet(QStringLiteral("QLabel{color:#cfd8dc;"
+                                             "font-size:16px;}"));
+    m_btnClockSync = mkButton(QString::fromUtf8(TXT_SYNC), w, "#0d47a1");
+    connect(m_btnClockSync, &QPushButton::clicked, this,
+            &SettingsPage::onClockSync);
+    m_btnClockSet = mkButton(QString::fromUtf8(TXT_SETTIME), w, "#33691e");
+    connect(m_btnClockSet, &QPushButton::clicked, this,
+            &SettingsPage::onClockSet);
+    ch->addWidget(m_lblClock, 1);
+    ch->addWidget(m_btnClockSync);
+    ch->addWidget(m_btnClockSet);
+    v->addLayout(ch);
     v->addStretch(1);
     return w;
 }
@@ -678,6 +723,23 @@ void SettingsPage::onConnect()
     m_wifi->connectTo(ssid, psk);
 }
 
+void SettingsPage::onSaveNetwork()
+{
+    if (m_wifi == nullptr)
+        return;
+    const QString ssid = m_edSsid->text().trimmed();
+    const QString psk = m_edPsk->text();
+    if (ssid.isEmpty()) {
+        setStatus(QStringLiteral("ssid is empty"));
+        return;
+    }
+    /* save only: the manager writes the vendor layout (ctrl_interface /
+     * update_config / ap_scan + network{ssid,psk}) and does not touch the
+     * running link, so nothing can roll the file back under us. */
+    setStatus(QStringLiteral("saving %1 ...").arg(WifiManager::confPath()));
+    m_wifi->saveConfig(ssid, psk);
+}
+
 void SettingsPage::onWifiStatus(const WifiStatus &s)
 {
     if (m_lblWifi == nullptr)
@@ -705,6 +767,8 @@ void SettingsPage::onWifiScan(const QStringList &ssids)
 
 void SettingsPage::onWifiBusy(bool busy, const QString &what)
 {
+    if (m_btnNetUp != nullptr)
+        m_btnNetUp->setEnabled(!busy);
     if (m_btnConnect != nullptr)
         m_btnConnect->setEnabled(!busy);
     if (busy)
@@ -727,8 +791,8 @@ void SettingsPage::onWifiMessage(const QString &line)
 
 void SettingsPage::refreshDiag()
 {
-    static const char *units[] = { "park-clock", "board-power", "m4-load",
-                                   "core0-bus", "park-ui" };
+    static const char *units[] = { "board-power", "wifi-up", "park-clock",
+                                   "m4-load", "core0-bus", "park-ui" };
     /* this rootfs keeps tools in /sbin: do not rely on a systemd unit's PATH */
     QString systemctl = QStringLiteral("systemctl");
     static const char *const dirs[] = { "/bin/", "/usr/bin/", "/sbin/",
@@ -742,7 +806,8 @@ void SettingsPage::refreshDiag()
         }
     }
     QString txt;
-    for (int i = 0; i < 5; ++i) {
+    const int nUnits = int(sizeof(units) / sizeof(units[0]));
+    for (int i = 0; i < nUnits; ++i) {
         QProcess p;
         p.start(systemctl,
                 QStringList() << QStringLiteral("is-active")
@@ -773,4 +838,107 @@ void SettingsPage::refreshDiag()
     }
     if (m_lblDiagDev != nullptr)
         m_lblDiagDev->setText(dev);
+
+    refreshClock();
+}
+
+/* ----------------------------------------------------------------- clock */
+
+/* Absolute path of a board tool: this rootfs keeps date/python3 in /bin and
+ * the wifi tools in /sbin, and a systemd unit's PATH need not contain either. */
+static QString clockToolPath(const char *name)
+{
+    static const char *const dirs[] = { "/bin/", "/usr/bin/", "/sbin/",
+                                        "/usr/sbin/" };
+    for (int i = 0; i < 4; ++i) {
+        const QString p = QString::fromLatin1(dirs[i]) +
+                          QString::fromLatin1(name);
+        if (QFile::exists(p))
+            return p;
+    }
+    return QString::fromLatin1(name);
+}
+
+void SettingsPage::refreshClock()
+{
+    if (m_lblClock == nullptr)
+        return;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    QString txt = QStringLiteral("UTC %1").arg(
+        now.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    /* This board has no RTC: unless some sync ran, the year is 2020 and every
+     * HTTPS request fails with "certificate is not yet valid" - say it here so
+     * nobody debugs the cloud protocol for it. */
+    if (now.date().year() < 2025)
+        txt += QStringLiteral("   <- NOT SET: cloud TLS will fail "
+                              "(certificate is not yet valid)");
+    m_lblClock->setText(txt);
+}
+
+void SettingsPage::onClockSet()
+{
+    const QString cur = QDateTime::currentDateTimeUtc()
+                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    const QString in = SoftKeyboard::getText(this, QStringLiteral("UTC time"),
+                                             cur, false);
+    if (in.isNull())
+        return;
+    const QString stamp = in.trimmed();
+    /* Strict shape check. The value goes to date(1) as an argv entry (no shell
+     * is involved), but garbage must never reach the system clock. */
+    static const QRegularExpression re(QStringLiteral(
+        "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$"));
+    if (!re.match(stamp).hasMatch()) {
+        setStatus(QStringLiteral(
+            "time must look like 2026-09-11 16:30:00 (UTC)"));
+        return;
+    }
+    QProcess p;
+    p.start(clockToolPath("date"), QStringList() << QStringLiteral("-u")
+                                                 << QStringLiteral("-s")
+                                                 << stamp);
+    if (!p.waitForFinished(2000)) {
+        setStatus(QStringLiteral("clock: date(1) did not answer"));
+        return;
+    }
+    const QString out = QString::fromLocal8Bit(p.readAll()).trimmed();
+    const bool ok = (p.exitStatus() == QProcess::NormalExit &&
+                     p.exitCode() == 0);
+    setStatus(QStringLiteral("clock %1: %2")
+                  .arg(ok ? QStringLiteral("SET") : QStringLiteral("FAILED"),
+                       out.left(60)));
+    refreshClock();
+}
+
+void SettingsPage::onClockSync()
+{
+    const QString script = QStringLiteral("/opt/park_ui/set_clock.py");
+    if (!QFile::exists(script)) {
+        setStatus(QStringLiteral("clock: %1 missing - run install_all.sh, or "
+                                 "use the SETTIME button").arg(script));
+        return;
+    }
+    setStatus(QStringLiteral("clock: syncing from an HTTP Date header ..."));
+    QProcess *p = new QProcess(this);
+    p->setProcessChannelMode(QProcess::MergedChannels);
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, p](int code, QProcess::ExitStatus st) {
+                const QString out =
+                    QString::fromLocal8Bit(p->readAll()).trimmed();
+                p->deleteLater();
+                if (st == QProcess::NormalExit && code == 0)
+                    setStatus(QStringLiteral("clock: %1").arg(out.left(120)));
+                else
+                    setStatus(QStringLiteral("clock sync failed: %1")
+                                  .arg(out.right(120)));
+                refreshClock();
+            });
+    /* Same helper park-clock.service runs; short retry budget so the touch UI
+     * gets an answer within a few seconds. */
+    p->start(clockToolPath("python3"),
+             QStringList() << script << QStringLiteral("-v")
+                           << QStringLiteral("--retries")
+                           << QStringLiteral("3")
+                           << QStringLiteral("--delay")
+                           << QStringLiteral("3"));
 }

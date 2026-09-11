@@ -443,13 +443,110 @@ void WifiManager::applyConfig(const QString &why)
 void WifiManager::onApplyFinished(int exitCode, QProcess::ExitStatus status)
 {
     const QString out = QString::fromLocal8Bit(m_apply.readAll()).trimmed();
-    emit eventMessage(QStringLiteral("wifi: apply done rc=%1 (%2) %3")
+    emit eventMessage(QStringLiteral("wifi: %1 done rc=%2 (%3) %4")
+                          .arg(m_bringUp ? QStringLiteral("bring-up")
+                                         : QStringLiteral("apply"))
                           .arg(exitCode)
                           .arg(status == QProcess::NormalExit
                                    ? QStringLiteral("normal")
                                    : QStringLiteral("crashed"))
                           .arg(out.right(60)));
+    if (m_bringUp) {
+        /* Manual bring-up: the config on disk was not touched, so there is
+         * nothing to roll back - only report what the link looks like now. */
+        m_bringUp = false;
+        m_watchdog.stop();
+        m_deadline.stop();
+        refresh();
+        setBusy(false, QString());
+        if (m_st.hasIp)
+            emit resultMessage(true, m_st.ssid.isEmpty()
+                                         ? QStringLiteral("link up")
+                                         : QStringLiteral("link up (ssid %1)")
+                                               .arg(m_st.ssid));
+        else
+            emit resultMessage(false, QStringLiteral(
+                "bring-up ran but no lease yet - check ssid/password or the AP"));
+        emit statusChanged(m_st);
+        return;
+    }
     settle(QStringLiteral("apply"));
+}
+
+/* Save-only path (2026-09-11 user request: "saving the network settings must
+ * update /etc/wpa_supplicant.conf"). CONNECT already writes the file, but it
+ * then applies it and - by design - rolls the file back when the new network
+ * gives no lease within 20 s; an operator who only wanted to fix a typo in the
+ * file saw the old content come back. This writes the same layout and stops
+ * there, so what you typed is what is on disk.
+ *
+ * The first backup is preserved: repeated saves must not overwrite the vendor
+ * original that the CONNECT rollback path relies on. */
+void WifiManager::saveConfig(const QString &ssid, const QString &psk)
+{
+    const QString s = ssid.trimmed();
+    if (s.isEmpty()) {
+        emit resultMessage(false, QStringLiteral("ssid is empty"));
+        return;
+    }
+    if (!psk.isEmpty() && (psk.size() < 8 || psk.size() > 63)) {
+        emit resultMessage(false,
+                           QStringLiteral("wpa2 passphrase must be 8..63 chars"));
+        return;
+    }
+    if (!QFile::exists(backupPath())) {
+        if (backupConf())
+            emit eventMessage(QStringLiteral("wifi: backup saved to %1")
+                                  .arg(backupPath()));
+        else
+            emit eventMessage(QStringLiteral(
+                "wifi: no %1 to back up (first configuration?)").arg(confPath()));
+    }
+    if (!writeConf(s, psk)) {
+        emit resultMessage(false, QStringLiteral("cannot write %1")
+                                      .arg(confPath()));
+        return;
+    }
+    refresh();
+    emit eventMessage(QStringLiteral("wifi: %1 updated (ssid=%2%s)")
+                          .arg(confPath(), s,
+                               psk.isEmpty() ? QStringLiteral(", open network")
+                                             : QString()));
+    emit resultMessage(true, QStringLiteral(
+        "saved to %1 - press CONNECT (or bring up) to activate").arg(confPath()));
+    emit statusChanged(m_st);
+}
+
+/* Manual bring-up with the CURRENT /etc/wpa_supplicant.conf: exactly the three
+ * vendor commands (ip link set up -> wpa_supplicant -B -D nl80211 -> udhcpc),
+ * run asynchronously, with no config write and no rollback. Needed because the
+ * link is otherwise only raised at boot (wifi-up.service) or when the operator
+ * presses CONNECT, and a board installed before wifi-up.service existed
+ * (or whose boot sync failed) has no way to raise wlan0 from the panel. */
+void WifiManager::bringUp()
+{
+    if (m_apply.state() != QProcess::NotRunning) {
+        emit eventMessage(QStringLiteral(
+            "wifi: busy with another apply - bring-up ignored"));
+        return;
+    }
+    if (!QFile::exists(confPath())) {
+        emit resultMessage(false, QStringLiteral(
+            "no %1 yet - set SSID/password and press CONNECT first")
+                                   .arg(confPath()));
+        return;
+    }
+    m_bringUp = true;
+    m_rollbackArmed = false;
+    m_pendingSsid.clear();
+    setBusy(true, QStringLiteral("bring up"));
+    emit eventMessage(QStringLiteral(
+        "wifi: bring-up with %1 (ip link up -> wpa_supplicant -> udhcpc)")
+                          .arg(confPath()));
+    /* Hard cap only: no rollback timer, the config is not ours to restore. */
+    m_deadline.start(rollbackAfterMs());
+    m_apply.start(QStringLiteral("/bin/sh"),
+                  QStringList() << QStringLiteral("-c") << buildScript());
 }
 
 /* One decision point for "did the new configuration work?".
@@ -458,6 +555,23 @@ void WifiManager::onApplyFinished(int exitCode, QProcess::ExitStatus status)
 void WifiManager::settle(const QString &why)
 {
     refresh();
+    if (m_bringUp) {
+        /* bring-up: report only, never touch the file (see bringUp()) */
+        if (m_apply.state() != QProcess::NotRunning)
+            return;                    /* its finished handler reports */
+        m_bringUp = false;
+        m_watchdog.stop();
+        m_deadline.stop();
+        setBusy(false, QString());
+        emit resultMessage(m_st.hasIp,
+                           m_st.hasIp
+                               ? QStringLiteral("link up")
+                               : QStringLiteral("bring-up (%1) gave no lease - "
+                                                "check ssid/password or the AP")
+                                     .arg(why));
+        emit statusChanged(m_st);
+        return;
+    }
     if (m_st.hasIp) {
         m_watchdog.stop();
         m_deadline.stop();

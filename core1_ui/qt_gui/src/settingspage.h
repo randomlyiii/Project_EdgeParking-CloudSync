@@ -64,12 +64,17 @@ private slots:
     void onWifiResult(bool ok, const QString &detail);
     void onWifiMessage(const QString &line);
     void onConnect();
+    void onSaveNetwork();      /* write ssid/psk to /etc/wpa_supplicant.conf */
     void onUiMessage(const QString &line);
     void onCloudFailed(const QString &reason, const QString &detail);
     void onCloudUnreadable(const QString &detail, qint64 ms);
     void onCloudFinished(const QString &plate, double conf, int status,
                          qint64 ms, bool writeback);
     void refreshDiag();
+    /* clock (no RTC on this board: a wrong year breaks every HTTPS request) */
+    void refreshClock();
+    void onClockSet();
+    void onClockSync();
 
 private:
     QWidget *buildCloudTab();
@@ -106,11 +111,15 @@ private:
     QLineEdit *m_edPsk = nullptr;
     QListWidget *m_lstSsid = nullptr;
     QLabel *m_lblWifiHint = nullptr;
+    QPushButton *m_btnNetUp = nullptr;   /* run the vendor wifi recipe now */
     QPushButton *m_btnConnect = nullptr;
 
     /* diag tab */
     QLabel *m_lblDiag = nullptr;
     QLabel *m_lblDiagDev = nullptr;
+    QLabel *m_lblClock = nullptr;        /* current UTC + "NOT SET" warning */
+    QPushButton *m_btnClockSet = nullptr;
+    QPushButton *m_btnClockSync = nullptr;
 };
 
 #endif /* SETTINGSPAGE_H */
