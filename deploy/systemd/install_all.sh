@@ -41,7 +41,7 @@ pick() {
     return 1
 }
 
-echo "[1/7] resolve sources"
+echo "[1/8] resolve sources"
 CORE0_BIN=$(pick "${CORE0_SRC:-}" ./core0_business /root/core0_business \
                  /root/core0_service/core0_business) || true
 CONF=$(pick ./core0.conf /root/core0.conf /root/core0_service/core0.conf \
@@ -62,7 +62,7 @@ echo "  load_m4.sh     : ${LOADM4:-<not found>}"
 echo "  link_test.py   : ${LINKTEST:-<not found>}"
 echo "  M4 elf         : ${M4ELF:-<not found, keep existing $FW_DST>}"
 
-echo "[2/7] install core0 ($CORE0_DST)"
+echo "[2/8] install core0 ($CORE0_DST)"
 mkdir -p "$CORE0_DST/tools"
 if [ -n "$CORE0_BIN" ]; then
     cp "$CORE0_BIN" "$CORE0_DST/core0_business"
@@ -87,7 +87,7 @@ fi
 [ -n "$LINKTEST" ] && cp "$LINKTEST" "$CORE0_DST/tools/rpmsg_link_test.py" && chmod +x "$CORE0_DST/tools/rpmsg_link_test.py"
 [ -n "$LOADM4" ] || INSTALL_M4=0
 
-echo "[3/7] install park_ui ($UI_DST)"
+echo "[3/8] install park_ui ($UI_DST)"
 if [ -n "$UI_BIN" ]; then
     mkdir -p /opt/park_ui
     cp "$UI_BIN" "$UI_DST"
@@ -96,8 +96,13 @@ else
     echo "  [warn] park_ui not found (./bin/park_ui or /root/park_ui) - build it on the book"
     INSTALL_UI=0
 fi
+# clock helper: the board has no RTC and boots in 2020, which breaks every
+# HTTPS certificate -> park-clock.service runs this before park-ui (step [8/8])
+cp "$DIR/set_clock.py" /opt/park_ui/set_clock.py
+chmod +x /opt/park_ui/set_clock.py
+echo "  installed /opt/park_ui/set_clock.py"
 
-echo "[4/7] install M4 firmware"
+echo "[4/8] install M4 firmware"
 if [ -n "$M4ELF" ]; then
     cp "$M4ELF" "$FW_DST"
     echo "  installed $FW_DST"
@@ -109,28 +114,61 @@ else
     INSTALL_M4=0
 fi
 
-echo "[5/7] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
+echo "[5/8] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
 if systemctl list-unit-files 2>/dev/null | grep -q '^myir.service'; then
     # NOTE: /usr/bin/start.sh (run by myir.service) also drove the two board
     # power-rail GPIOs high. Disabling the HMI therefore also killed the onboard
     # USB hub -> the K210 never enumerated. board-power.service replicates those
-    # two writes, so both must always be installed together (step [6/7]).
+    # two writes, so both must always be installed together (step [6/8]).
     systemctl disable --now myir.service 2>/dev/null || true
     echo "  myir.service disabled and stopped"
 else
     echo "  myir.service not present (already removed?)"
 fi
-pkill -9 -f "mxapp2" 2>/dev/null || true
+# no pkill on this board: walk /proc and kill by comm/argv (skip nothing here,
+# this script's own name does not contain mxapp2)
+for d in /proc/[0-9]*; do
+    [ -r "$d/cmdline" ] || continue
+    if tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q mxapp2; then
+        kill -9 "${d#/proc/}" 2>/dev/null || true
+    fi
+done
 
-echo "[6/7] board power rails (USB host VBUS / onboard hub enable)"
+echo "[6/8] board power rails (USB host VBUS / onboard hub enable)"
 cp "$DIR/board-power.service" /etc/systemd/system/board-power.service
 systemctl enable board-power.service
 systemctl start board-power.service 2>/dev/null || true
 echo "  enabled board-power.service (GPIO 82/PF2 + 139/PI11 high)"
 
-echo "[7/7] install systemd units"
+echo "[7/8] cloud fallback config (/etc/park/cloud.conf)"
+# Step 7: the DeepSeek/OpenAI-compatible settings live OUTSIDE the repo (the API
+# key must never be committed, P7-07). The GUI reads this file and the LCD
+# settings page rewrites it atomically (keeping a .bak). Never overwrite an
+# existing file here - it holds the operator's key.
+install -d -m 700 /etc/park
+CLOUD_EX=
+for p in "$DIR/../cloud.conf.example" "$DIR/cloud.conf.example"; do
+    if [ -f "$p" ]; then CLOUD_EX=$p; break; fi
+done
+if [ -f /etc/park/cloud.conf ]; then
+    echo "  keep existing /etc/park/cloud.conf (key untouched)"
+elif [ -n "$CLOUD_EX" ]; then
+    cp "$CLOUD_EX" /etc/park/cloud.conf
+    chmod 600 /etc/park/cloud.conf
+    echo "  installed template /etc/park/cloud.conf (mode 600)"
+    echo "  [todo] put the real key in api_key= (or export DEEPSEEK_API_KEY)"
+else
+    echo "  [warn] no cloud.conf.example - create /etc/park/cloud.conf by hand"
+fi
+
+echo "[8/8] install systemd units"
 # always ship park-ui.service (it is also the UI-only entry point)
 cp "$DIR/park-ui.service" /etc/systemd/system/park-ui.service
+# clock: no RTC on this board -> boots in 2020 -> HTTPS certs invalid
+cp "$DIR/park-clock.service" /etc/systemd/system/park-clock.service
+systemctl enable park-clock.service
+systemctl start park-clock.service 2>/dev/null || true
+echo "  enabled park-clock.service (HTTP Date -> date -s, before park-ui)"
 systemctl daemon-reload
 if [ "$INSTALL_M4" = "1" ]; then
     cp "$DIR/m4-load.service" /etc/systemd/system/m4-load.service
@@ -151,15 +189,16 @@ fi
 systemctl daemon-reload
 
 echo
-echo "done. boot chain: m4-load -> core0-bus -> park-ui"
+echo "done. boot chain: park-clock -> m4-load -> core0-bus -> park-ui"
 echo "optional extra env for the UI: /etc/park-ui.env (e.g. PARK_UI_TTY=/dev/ttyACM0)"
 echo
 echo "start everything now:"
-echo "  systemctl start m4-load core0-bus park-ui"
+echo "  systemctl start park-clock m4-load core0-bus park-ui"
 echo "check:"
-echo "  systemctl status m4-load core0-bus park-ui --no-pager"
+echo "  date -u                      # must be the real time, not 2020"
+echo "  systemctl status park-clock m4-load core0-bus park-ui --no-pager"
 echo "  ls -l /dev/ttyRPMSG0 /dev/shm/park_shm"
-echo "  journalctl -u m4-load -u core0-bus -u park-ui -n 40 --no-pager"
+echo "  journalctl -u park-clock -u m4-load -u core0-bus -u park-ui -n 40 --no-pager"
 echo
 echo "M4 bring-up is flaky; retry by hand (wait >=2 min between tries):"
 echo "  systemctl restart m4-load"

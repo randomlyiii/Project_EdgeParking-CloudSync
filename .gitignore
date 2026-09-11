@@ -19,9 +19,22 @@ build/
 # others
 code.txt
 error.txt
+key.txt
 
 # ---- local build/run artifacts + stale copies (2026-09-11) ----
 *.exe
 __pycache__/
 core1_ui/deploy/
 core1_ui/rpmsg_link_test.py
+
+# ---- CA bundle copied from the dev PC for the board (/etc/park/ca.pem) ----
+# public Mozilla certs, but a local copy: the board image has no /etc/ssl/certs
+core1_ui/ca.pem
+core1_ui/ca-bundle.crt
+
+# ---- step 7: cloud settings hold the API key, never commit them (P7-07) ----
+cloud.conf
+cloud.conf.bak
+cloud.env
+**/cloud.conf
+!deploy/cloud.conf.example

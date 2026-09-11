@@ -27,6 +27,7 @@ park-ui.service      park_ui (Core1)：linuxfb 全屏 UI，读 /park_shm 与 /de
 | `systemd/park-ui.service` | park_ui 开机自启（linuxfb fb0、`Restart=always`、可配 `/etc/park-ui.env`） |
 | `systemd/install_all.sh` | **全链路安装**：拷二进制/配置/工具 + 装并 enable 三个 unit + 禁用厂商 HMI |
 | `systemd/install_park_ui.sh` | UI-only 安装（旧命令兼容，内部调 `install_all.sh` 且关掉 M4/core0） |
+| `cloud.conf.example` | 第7步云端配置模板（拷到 `/etc/park/cloud.conf`，模式 600；**含 API key，永不入 git**） |
 
 安装布局：
 
@@ -37,6 +38,7 @@ park-ui.service      park_ui (Core1)：linuxfb 全屏 UI，读 /park_shm 与 /de
 /opt/core0/tools/rpmsg_link_test.py  RPMSG 链路检测（python3，零编译）
 /opt/park_ui/park_ui                 Qt UI
 /lib/firmware/m4_fw.elf              M4 固件
+/etc/park/cloud.conf                 云端兜底配置（API key/阈值/模型，600；不在仓库内）
 ```
 
 ## 安装（板上 root）
@@ -76,7 +78,52 @@ INSTALL_UI=0      sh install_all.sh     # 不装 UI
 CORE0_SRC=/path/core0_business  UI_SRC=/path/park_ui  M4_FW=/path/m4_fw.elf
 ```
 
-`install_all.sh` **不会覆盖**已存在的 `/opt/core0/core0.conf`（配置文件是操作员的事实源）。
+`install_all.sh` **不会覆盖**已存在的 `/opt/core0/core0.conf`（配置文件是操作员的事实源），
+同样**不会覆盖** `/etc/park/cloud.conf`（里面有 API key）；只在文件不存在时放一份模板。
+
+## 第7步云端兜底（`/etc/park/cloud.conf`）
+
+**板端能力实测（2026-09-11，`root@100ask` 现场探针）**：
+
+| 项 | 结果 | 影响 |
+|---|---|---|
+| `libQt5Network.so.5.12.8` | ✅ 在 | Qt Network 方案可用，**不需要 libcurl** |
+| `libssl.so.1.1` / `libcrypto.so.1.1` | ✅ 在 | Qt 的 TLS 后端有库 |
+| `/etc/ssl/certs/ca-certificates.crt` | ❌ **不存在** | **HTTPS 默认握手失败** → 必须装 CA 或临时开 `insecure_tls` |
+| `curl` | ❌ 无 | 原"退化到 curl/libcurl"的路子作废（python3 在 `/bin/python3`） |
+| `iw` / `wpa_cli` / `udhcpc` / `wpa_supplicant` | ✅ 在（**都在 `/sbin`**） | WiFi 检测/改配置全支持；代码已改成**绝对路径调用**（systemd 单元的 PATH 不保证含 `/sbin`） |
+| `/etc/wpa_supplicant.conf` | ✅ 厂商原文件（`ctrl_interface`/`update_config`/`ap_scan=1` + 一个 network） | 程序写配置时保留这三个全局项，且写前备份 `.bak` |
+
+### 先解决 CA（不然后面全是 TLS 报错）
+
+```sh
+# 从 book / PC 拷一份 Mozilla CA bundle（Ubuntu 类系统自带）
+scp book@<book-ip>:/etc/ssl/certs/ca-certificates.crt /tmp/ca.pem
+scp /tmp/ca.pem root@<board>:/etc/park/ca.pem     # park_ui 自动优先使用
+
+# 或者临时演示（不校验证书，仅 Demo 用）
+sed -i 's/^insecure_tls=.*/insecure_tls=1/' /etc/park/cloud.conf
+```
+
+启动日志会直接说明现状（`supportsSsl` / SSL 库版本 / 实际 CA 路径），设置页「云端」页签底部也有一行 `tls=...`。
+
+```sh
+# 1) 装完模板后填 key（或直接 export DEEPSEEK_API_KEY=/etc/park-ui.env）
+vi /etc/park/cloud.conf          # api_key=sk-...
+chmod 600 /etc/park/cloud.conf
+
+# 2) 重启 UI 让它读新配置（配置在启动时读入，也可在 LCD 设置页里改）
+systemctl restart park-ui
+journalctl -u park-ui -n 20 --no-pager | grep -E 'cloud|TLS'
+#   cloud: config /etc/park/cloud.conf (loaded) api=... key=sk-abcd...wxyz timeout=5000ms retry=1
+#   cloud: Qt TLS supportsSsl=yes (OpenSSL 1.1.x ...), CA=/etc/park/ca.pem
+#   cloud: Qt TLS supportsSsl=yes (...), CA=NONE - install /etc/park/ca.pem or set insecure_tls=1
+#   cloud: no API key - set it on the LCD settings page      <- key 没读到
+```
+
+- **LCD 内全部可改**：底栏齿轮 → 设置页（云端/网络/诊断三页签）。置信度阈值、API 地址、模型名、key（软键盘输入）、测试连接、云端复检都在里面；底栏「云端复检」按钮 = 用最近一帧 K210 画面手动问一次云。
+- **网卡只有 WiFi**：设置页「网络」页签可改 SSID/密码，写 `/etc/wpa_supplicant.conf` 前自动备份 `.bak`，**20s 没拿到 IP 自动回滚**（改 WiFi 等于拆自己的 SSH 梯子，建议同时留串口）。
+- **断网演练**：设置页勾「断网演练」后每个云请求在板上本地失败（1.2s），用来演示"云挂了本地照常"；勾「假结果」则离线返回 `TEST001/0.98`（白名单可开闸）用于无网演示。
 
 ## 排障
 
