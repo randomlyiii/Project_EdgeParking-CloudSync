@@ -1,0 +1,16 @@
+[Unit]
+# Second chance for the no-RTC clock (2026-09-11 real incident): park-clock
+# runs once at boot, right after wifi-up. If DHCP/DNS was not ready yet the
+# write failed silently and the board stayed in 2020, so every HTTPS request
+# died with "certificate is not yet valid" - indistinguishable from a cloud
+# bug. This timer re-runs the sync a few minutes after boot and then hourly.
+Description=EdgeParking clock re-sync timer (late DHCP / AP came up late)
+After=wifi-up.service
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Unit=park-clock.service
+
+[Install]
+WantedBy=timers.target

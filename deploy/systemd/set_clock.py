@@ -13,7 +13,14 @@ Order is: park-clock.conf list -> this default list.
 Usage (root, on the board):
     python3 /opt/park_ui/set_clock.py            # try the default hosts
     python3 /opt/park_ui/set_clock.py -v         # print what it does
+    python3 /opt/park_ui/set_clock.py --retries 8 --delay 10
     python3 /opt/park_ui/set_clock.py host:port  # use a specific endpoint
+
+Why the retry loop (2026-09-11 real incident): at boot this unit runs right
+after wifi-up. If DHCP/DNS is not ready yet the single attempt failed silently,
+the clock stayed at 2020 and every HTTPS request then died with
+"CERTIFICATE_VERIFY_FAILED: certificate is not yet valid" - which looks like a
+cloud bug, not a clock bug. The unit now passes --retries/--delay.
 
 Exit codes: 0 clock set (or already within tolerance), 1 nothing reachable.
 ASCII only (board rule).
@@ -74,34 +81,69 @@ def set_clock(epoch):
 
 def main(argv):
     verbose = "-v" in argv or "--verbose" in argv
-    args = [a for a in argv[1:] if not a.startswith("-")]
+    retries = 1
+    delay = 10
+    args = []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-v", "--verbose"):
+            i += 1
+            continue
+        if a in ("--retries", "--delay") and i + 1 < len(argv):
+            try:
+                if a == "--retries":
+                    retries = max(1, int(argv[i + 1]))
+                else:
+                    delay = max(1, int(argv[i + 1]))
+            except ValueError:
+                pass
+            i += 2
+            continue
+        args.append(a)
+        i += 1
+
     sources = DEFAULT_SOURCES
     if args:
         host, _, port = args[0].partition(":")
         sources = [(host, int(port or 80))]
 
-    for host, port in sources:
-        try:
-            epoch = http_date(host, port)
-        except Exception as exc:                      # noqa: BLE001
-            log("%s:%d failed (%s)" % (host, port, exc), verbose)
-            continue
-        if epoch is None:
-            log("%s:%d has no Date header" % (host, port), verbose)
-            continue
-        now = int(time.time())
-        log("%s:%d says %d (local %d, delta %+d s)"
-            % (host, port, epoch, now, epoch - now), verbose)
-        if abs(epoch - now) <= TOLERANCE_S:
-            log("clock already within %d s, nothing to do" % TOLERANCE_S,
-                verbose)
+    attempt = 1
+    while attempt <= retries:
+        for host, port in sources:
+            try:
+                epoch = http_date(host, port)
+            except Exception as exc:                  # noqa: BLE001
+                log("%s:%d failed (%s)" % (host, port, exc), verbose)
+                continue
+            if epoch is None:
+                log("%s:%d has no Date header" % (host, port), verbose)
+                continue
+            now = int(time.time())
+            log("%s:%d says %d (local %d, delta %+d s)"
+                % (host, port, epoch, now, epoch - now), verbose)
+            if abs(epoch - now) <= TOLERANCE_S:
+                print("set_clock: clock already within %d s (%s UTC), nothing "
+                      "to do" % (TOLERANCE_S,
+                                 time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.gmtime(now))))
+                return 0
+            set_clock(epoch)
+            print("set_clock: clock set to %s UTC from %s:%d (was off by %+d s)"
+                  % (time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(epoch)),
+                     host, port, epoch - now))
             return 0
-        set_clock(epoch)
-        log("clock set to %s" % time.strftime("%Y-%m-%d %H:%M:%S",
-                                              time.gmtime(epoch)), True)
-        return 0
+        if attempt < retries:
+            log("attempt %d/%d found no time source, retrying in %d s"
+                % (attempt, retries, delay), True)
+            time.sleep(delay)
+        attempt += 1
 
-    log("no usable time source (offline?)", True)
+    sys.stderr.write(
+        "set_clock: FAILED after %d attempt(s); clock is still %s UTC\n"
+        "set_clock: fix by hand (or check wifi-up): "
+        "date -u -s \"YYYY-MM-DD HH:MM:SS\"\n"
+        % (retries, time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())))
     return 1
 
 

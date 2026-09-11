@@ -1,0 +1,27 @@
+[Unit]
+# The board's only network link is WiFi (Task.md: single network link), and the
+# vendor desktop service that used to raise wlan0 at boot (myir.service) is
+# disabled on purpose. Without this unit every power cycle needs
+#     ip link set wlan0 up
+#     wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf
+#     udhcpc -i wlan0
+# typed by hand - and a link that never comes up shows up as a "cloud failure"
+# on the panel. Runs before park-clock (which fetches an HTTP Date) and park-ui.
+Description=EdgeParking WiFi bring-up (wlan0: ip link up + wpa_supplicant + udhcpc)
+After=board-power.service sysinit.target
+Wants=board-power.service
+Before=park-clock.service m4-load.service core0-bus.service park-ui.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# PARK_UI_WIFI / PARK_WPA_CONF may override the defaults in the script.
+EnvironmentFile=-/etc/park-ui.env
+# ip/wpa_supplicant/udhcpc are resolved by absolute path inside the script.
+ExecStart=/bin/sh /opt/park_ui/tools/wifi_up.sh
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

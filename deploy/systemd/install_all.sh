@@ -45,7 +45,7 @@ echo "[1/8] resolve sources"
 CORE0_BIN=$(pick "${CORE0_SRC:-}" ./core0_business /root/core0_business \
                  /root/core0_service/core0_business) || true
 CONF=$(pick ./core0.conf /root/core0.conf /root/core0_service/core0.conf \
-            ./core0.conf.example /root/core0_service/core0.conf.example) || true
+            ./sample_core0.conf /root/core0_service/sample_core0.conf) || true
 UI_BIN=$(pick "${UI_SRC:-}" ./bin/park_ui /root/park_ui ./park_ui) || true
 LOADM4=$(pick ./tools/load_m4.sh /root/core0_service/tools/load_m4.sh \
               "$DIR/../../core0_service/tools/load_m4.sh") || true
@@ -81,13 +81,13 @@ if [ -n "$CONF" ]; then
         echo "  installed $CORE0_DST/core0.conf"
     fi
 else
-    echo "  [warn] no core0.conf / core0.conf.example found"
+    echo "  [warn] no core0.conf / sample_core0.conf found"
 fi
 [ -n "$LOADM4" ]   && cp "$LOADM4"   "$CORE0_DST/tools/load_m4.sh"        && chmod +x "$CORE0_DST/tools/load_m4.sh"
 [ -n "$LINKTEST" ] && cp "$LINKTEST" "$CORE0_DST/tools/rpmsg_link_test.py" && chmod +x "$CORE0_DST/tools/rpmsg_link_test.py"
 [ -n "$LOADM4" ] || INSTALL_M4=0
 
-echo "[3/8] install park_ui ($UI_DST)"
+echo "[3/9] install park_ui ($UI_DST)"
 if [ -n "$UI_BIN" ]; then
     mkdir -p /opt/park_ui
     cp "$UI_BIN" "$UI_DST"
@@ -97,12 +97,26 @@ else
     INSTALL_UI=0
 fi
 # clock helper: the board has no RTC and boots in 2020, which breaks every
-# HTTPS certificate -> park-clock.service runs this before park-ui (step [8/8])
+# HTTPS certificate -> park-clock.service runs this before park-ui (step [9/9])
 cp "$DIR/set_clock.py" /opt/park_ui/set_clock.py
 chmod +x /opt/park_ui/set_clock.py
 echo "  installed /opt/park_ui/set_clock.py"
 
-echo "[4/8] install M4 firmware"
+echo "[4/9] WiFi bring-up helper + unit (wlan0 at boot)"
+# The board's only link is WiFi. park_ui raises it only when the operator taps
+# CONNECT, and myir.service (which used to do it at boot) is disabled below, so
+# without this step every power cycle needs the three vendor commands by hand -
+# and a dead link is indistinguishable from a cloud failure on the panel.
+mkdir -p /opt/park_ui/tools
+cp "$DIR/wifi_up.sh" /opt/park_ui/tools/wifi_up.sh
+chmod +x /opt/park_ui/tools/wifi_up.sh
+cp "$DIR/wifi-up.service" /etc/systemd/system/wifi-up.service
+systemctl daemon-reload
+systemctl enable wifi-up.service
+systemctl start wifi-up.service 2>/dev/null || true
+echo "  installed /opt/park_ui/tools/wifi_up.sh + enabled wifi-up.service"
+
+echo "[5/9] install M4 firmware"
 if [ -n "$M4ELF" ]; then
     cp "$M4ELF" "$FW_DST"
     echo "  installed $FW_DST"
@@ -114,12 +128,12 @@ else
     INSTALL_M4=0
 fi
 
-echo "[5/8] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
+echo "[6/9] disable vendor HMI desktop (myir.service / mxapp2-eglfs)"
 if systemctl list-unit-files 2>/dev/null | grep -q '^myir.service'; then
     # NOTE: /usr/bin/start.sh (run by myir.service) also drove the two board
     # power-rail GPIOs high. Disabling the HMI therefore also killed the onboard
     # USB hub -> the K210 never enumerated. board-power.service replicates those
-    # two writes, so both must always be installed together (step [6/8]).
+    # two writes, so both must always be installed together (step [7/9]).
     systemctl disable --now myir.service 2>/dev/null || true
     echo "  myir.service disabled and stopped"
 else
@@ -134,20 +148,20 @@ for d in /proc/[0-9]*; do
     fi
 done
 
-echo "[6/8] board power rails (USB host VBUS / onboard hub enable)"
+echo "[7/9] board power rails (USB host VBUS / onboard hub enable)"
 cp "$DIR/board-power.service" /etc/systemd/system/board-power.service
 systemctl enable board-power.service
 systemctl start board-power.service 2>/dev/null || true
 echo "  enabled board-power.service (GPIO 82/PF2 + 139/PI11 high)"
 
-echo "[7/8] cloud fallback config (/etc/park/cloud.conf)"
+echo "[8/9] cloud fallback config (/etc/park/cloud.conf)"
 # Step 7: the DeepSeek/OpenAI-compatible settings live OUTSIDE the repo (the API
 # key must never be committed, P7-07). The GUI reads this file and the LCD
 # settings page rewrites it atomically (keeping a .bak). Never overwrite an
 # existing file here - it holds the operator's key.
 install -d -m 700 /etc/park
 CLOUD_EX=
-for p in "$DIR/../cloud.conf.example" "$DIR/cloud.conf.example"; do
+for p in "$DIR/../sample_cloud.conf" "$DIR/sample_cloud.conf"; do
     if [ -f "$p" ]; then CLOUD_EX=$p; break; fi
 done
 if [ -f /etc/park/cloud.conf ]; then
@@ -158,17 +172,22 @@ elif [ -n "$CLOUD_EX" ]; then
     echo "  installed template /etc/park/cloud.conf (mode 600)"
     echo "  [todo] put the real key in api_key= (or export DEEPSEEK_API_KEY)"
 else
-    echo "  [warn] no cloud.conf.example - create /etc/park/cloud.conf by hand"
+    echo "  [warn] no sample_cloud.conf - create /etc/park/cloud.conf by hand"
 fi
 
-echo "[8/8] install systemd units"
+echo "[9/9] install systemd units"
 # always ship park-ui.service (it is also the UI-only entry point)
 cp "$DIR/park-ui.service" /etc/systemd/system/park-ui.service
 # clock: no RTC on this board -> boots in 2020 -> HTTPS certs invalid
 cp "$DIR/park-clock.service" /etc/systemd/system/park-clock.service
+cp "$DIR/park-clock.timer" /etc/systemd/system/park-clock.timer
 systemctl enable park-clock.service
 systemctl start park-clock.service 2>/dev/null || true
-echo "  enabled park-clock.service (HTTP Date -> date -s, before park-ui)"
+# the timer is the second chance: park-clock runs once at boot, right after
+# wifi-up - if DHCP/DNS is late it fails silently and the clock stays in 2020
+systemctl enable park-clock.timer 2>/dev/null || true
+systemctl start park-clock.timer 2>/dev/null || true
+echo "  enabled park-clock.service + park-clock.timer (HTTP Date -> date -s, before park-ui)"
 systemctl daemon-reload
 if [ "$INSTALL_M4" = "1" ]; then
     cp "$DIR/m4-load.service" /etc/systemd/system/m4-load.service
@@ -189,16 +208,21 @@ fi
 systemctl daemon-reload
 
 echo
-echo "done. boot chain: park-clock -> m4-load -> core0-bus -> park-ui"
-echo "optional extra env for the UI: /etc/park-ui.env (e.g. PARK_UI_TTY=/dev/ttyACM0)"
+echo "done. boot chain: board-power -> wifi-up -> park-clock -> m4-load -> core0-bus -> park-ui"
+echo "optional extra env for the UI: /etc/park-ui.env (e.g. PARK_UI_TTY=/dev/ttyACM0, PARK_UI_WIFI=wlan0)"
 echo
 echo "start everything now:"
-echo "  systemctl start park-clock m4-load core0-bus park-ui"
+echo "  systemctl start wifi-up park-clock m4-load core0-bus park-ui"
 echo "check:"
 echo "  date -u                      # must be the real time, not 2020"
-echo "  systemctl status park-clock m4-load core0-bus park-ui --no-pager"
+echo "  journalctl -u park-clock -n 10 --no-pager   # set_clock: clock set to ... UTC"
+echo "  journalctl -u wifi-up -n 10 --no-pager   # wifi-up: wlan0 online (ssid=...)"
+echo "  systemctl status wifi-up park-clock m4-load core0-bus park-ui --no-pager"
 echo "  ls -l /dev/ttyRPMSG0 /dev/shm/park_shm"
 echo "  journalctl -u park-clock -u m4-load -u core0-bus -u park-ui -n 40 --no-pager"
+echo
+echo "re-run the WiFi bring-up after editing /etc/wpa_supplicant.conf:"
+echo "  systemctl restart wifi-up"
 echo
 echo "M4 bring-up is flaky; retry by hand (wait >=2 min between tries):"
 echo "  systemctl restart m4-load"

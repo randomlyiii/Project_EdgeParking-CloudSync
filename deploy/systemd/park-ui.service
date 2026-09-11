@@ -3,11 +3,14 @@ Description=EdgeParking park_ui (Qt 5.12.8 linuxfb) - parking lot UI
 # Boot must land on our UI, not the vendor desktop. mxapp2 (eglfs, holds the
 # DRM master / draws the "default page") is killed in ExecStartPre before the
 # linuxfb app opens fb0; keep restarting on crash.
-# Full chain order: board-power -> m4-load -> core0-bus (creates /park_shm)
-# -> park-ui. board-power.service is what keeps the onboard USB hub (and thus
-# the K210 serial link) alive now that myir.service is disabled.
-After=m4-load.service core0-bus.service board-power.service multi-user.target
-Wants=m4-load.service core0-bus.service board-power.service multi-user.target
+# Full chain order: board-power -> wifi-up -> park-clock -> m4-load ->
+# core0-bus (creates /park_shm) -> park-ui. board-power.service is what keeps
+# the onboard USB hub (and thus the K210 serial link) alive now that
+# myir.service is disabled; wifi-up.service is what raises wlan0 at boot (the
+# vendor desktop used to do it) - without it the cloud looks broken after every
+# power cycle.
+After=m4-load.service core0-bus.service board-power.service wifi-up.service multi-user.target
+Wants=m4-load.service core0-bus.service board-power.service wifi-up.service multi-user.target
 
 [Service]
 Type=simple
