@@ -62,13 +62,13 @@ gcc -O2 -Wall -Wextra -std=gnu11 -Irpmsg -Ibusiness -Iipc_shm -Istorage \
 cd <repo>/core0_service
 make CROSS_COMPILE=arm-buildroot-linux-gnueabihf- core0_business core1_stub
 file core0_business            # 应为 ARM 32-bit ELF
-scp core0_business core1_stub core0.conf.example root@192.168.189.65:/root/c0/
+scp core0_business core1_stub sample_core0.conf root@192.168.189.65:/root/c0/
 ```
 
 板端（纯 ASCII 命令）：
 
 ```bash
-cd /root/c0 && cp core0.conf.example core0.conf && chmod +x core0_business core1_stub
+cd /root/c0 && cp sample_core0.conf core0.conf && chmod +x core0_business core1_stub
 ```
 
 ### 2.2 启动并看首屏日志

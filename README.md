@@ -53,26 +53,34 @@ park_demo/                      # 本仓库根
 │   ├── drivers/                # CAN / IO / 红外传感器驱动
 │   ├── rpmsg/                  # 帧收发、解析
 │   └── tasks/                  # FreeRTOS 任务（道闸 / 红外触发 / 故障检测）
-├── core0_service/              # A7-Core0，C 语言，实时业务底座
+├── core0_service/              # A7-Core0，C 语言，实时业务底座（**⛔ 一行云代码都没有**）
 │   ├── rpmsg/                  # /dev/ttyRPMSG0 帧收发、粘包处理、心跳（第3步已实现）
-│   ├── protocol/               # Modbus-TCP 从站、上位机指令解析
-│   ├── business/               # 停车场业务逻辑
-│   ├── storage/                # SQLite3 落盘（可选，默认关闭）
-│   ├── ipc_shm/                # 与 Core1 共享内存 + 事件通知
-│   ├── cloud/                  # 云平台上报（阶段4可选）
-│   ├── tools/                  # rpmsg_cli 打桩工具 + load_m4.sh（remoteproc 装载）
+│   ├── ipc_shm/                # 与 Core1 共享内存 park_shm v3 + 事件通知（ipc_shm.c/park_shm.h）
+│   ├── business/               # 停车场业务逻辑（app_config / business / whitelist / log）
+│   ├── storage/                # SQLite3 落盘（可选，默认关闭；store.c）
+│   ├── protocol/               # 预留（Modbus-TCP 已废弃，见 docs/protocols.md §4）
+│   ├── tools/                  # core0_selftest / core1_stub / rpmsg_cli / load_m4.sh / hostcheck
+│   ├── core0_main.c            # 业务守护入口
+│   ├── sample_core0.conf       # 配置模板（真文件 core0.conf 不入库）
 │   └── Makefile
-├── core1_ui/                   # A7-Core1，C/C++ Qt5
-│   ├── k210_link/              # K210 串口前端：预览流重组、抓拍指令、结果解析
-│   ├── cloud_api/              # DeepSeek Vision 兜底（HTTPS / libcurl）
-│   ├── qt_gui/                 # LCD 界面（预览视频 / 车牌 / 车位状态）
-│   └── CMakeLists.txt
+├── core1_ui/                   # A7-Core1：K210 前端 + Qt 界面 + 云端兜底
+│   ├── k210_link/              # K210 串口预览/结果解析（python 联调脚本）
+│   └── qt_gui/                 # LCD 界面 + **第7步云端兜底（唯一云代码所在）**
+│       ├── src/cloud_client.*  #   Qt Network 异步 POST + python3 回退传输
+│       ├── src/cloud_settings.*#   /etc/park/cloud.conf（含每厂商一把 key）
+│       ├── src/wifi_manager.*  #   wlan0 检测/改配置（20s 回滚）
+│       ├── src/settingspage.*  #   齿轮设置页（云端/网络/诊断）
+│       └── tools/              #   build_arm.sh（book 交叉编译）/ check_static.py（门禁）
+│   # 注意：`core1_ui/cloud_api/` 与 `core0_service/cloud/` 是**已删除的空占位目录**——
+│   # 云模块最终落在 park_ui 进程内（Core1 = park_ui），Core0 禁止发云请求。
 ├── docs/
 │   └── protocols.md            # 接口协议规格（字段级，正式维护副本）：
-│                               # CAN / K210 UART / RPMSG 已拷入；Modbus /
-│                               # 共享结构体随各步实现拷入（母本 PhaseMd/10）
+│                               # CAN / K210 UART / RPMSG / park_shm / 云端 HTTP 已拷入
 └── deploy/
-    └── systemd/                # 开机自启 unit（M4 装载 / core0 / core1 / k210_link）
+    ├── sample_cloud.conf       # /etc/park/cloud.conf 模板
+    ├── sample_wpa_supplicant.conf  # /etc/wpa_supplicant.conf 模板
+    ├── sample_park-ui.env      # /etc/park-ui.env 模板
+    └── systemd/                # 开机链：board-power → wifi-up → park-clock → m4-load → core0-bus → park-ui
 ```
 
 ## 构建与运行（概览）

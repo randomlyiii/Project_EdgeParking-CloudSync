@@ -37,4 +37,17 @@ cloud.conf
 cloud.conf.bak
 cloud.env
 **/cloud.conf
-!deploy/cloud.conf.example
+
+# ---- other live runtime configs: only the sample_* copies are tracked ----
+# (WiFi PSK, board overrides and the core0 daemon config live on the board)
+core0.conf
+**/core0.conf
+wpa_supplicant.conf
+**/wpa_supplicant.conf
+park-ui.env
+**/park-ui.env
+
+# never ignore the templates themselves
+!sample_*
+!**/sample_*
+!*.example

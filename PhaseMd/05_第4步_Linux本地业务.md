@@ -83,7 +83,7 @@
 - [x] P4-07 存储开关（宿主自测 S13，两种编译各一遍）
 - [x] P4-08 日志模块可用（宿主自测 S13）
 - [ ] **G4 整体待真机**：book 交叉编译 → scp → `./core0_business --conf core0.conf` + `./core1_stub`，观察 `[biz]` 状态迁移与 `[slots]` 计数；并按 spec 5.6.3 说明，第6步接入真识别/Core1 UI 前用打桩进程验收。
-  - 逐步操作/期望日志/判据表见 **`core0_service/G4_ACCEPTANCE.md`**（L1 宿主逻辑 / L2 板端离线 / L3 板端端到端三层）；示例配置 `core0_service/core0.conf.example`。
+  - 逐步操作/期望日志/判据表见 **`core0_service/G4_ACCEPTANCE.md`**（L1 宿主逻辑 / L2 板端离线 / L3 板端端到端三层）；示例配置 `core0_service/sample_core0.conf`。
 
 ## 避坑
 

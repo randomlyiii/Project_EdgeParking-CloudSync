@@ -413,5 +413,254 @@ if "QT       += core gui widgets network" not in pro:
 else:
     print("[pass] qt_gui.pro builds all step-7 modules + QtNetwork")
 
+# 8. privacy: every real runtime config in this project has a tracked "sample_*"
+#    counterpart whose values are placeholders only. The live files (API key,
+#    WiFi PSK, board overrides) stay outside the repo and are gitignored; a
+#    filled-in sample would leak exactly what those rules protect, so this gate
+#    fails on a real-looking value. (2026-09-11: user asked for the sweep.)
+import re
+
+REPO = ROOT.parent.parent          # core1_ui/qt_gui -> repository root
+SAMPLES = ["deploy/sample_cloud.conf", "deploy/sample_wpa_supplicant.conf",
+           "deploy/sample_park-ui.env", "core0_service/sample_core0.conf"]
+for extra in sorted(REPO.glob("*/sample_*.txt")):
+    SAMPLES.append(str(extra.relative_to(REPO)))
+PLACEHOLDERS = {"YOUR_PASSWORD", "YOUR_PSK", "YOUR_SSID", "changeme", ""}
+
+for rel in SAMPLES:
+    p = REPO / rel
+    if not p.exists():
+        print("[FAIL] missing sample %s" % rel)
+        ok = False
+        continue
+    b = p.read_bytes()
+    if any(x > 127 for x in b):
+        print("[FAIL] %s is not pure ASCII" % rel)
+        ok = False
+    t = b.decode("utf-8", "replace")
+    if re.search(r"sk-[A-Za-z0-9_-]{16,}", t):
+        print("[FAIL] %s carries a real-looking API key" % rel)
+        ok = False
+    for m in re.finditer(r'psk\s*=\s*"([^"]*)"', t):
+        if m.group(1) not in PLACEHOLDERS:
+            print("[FAIL] %s carries a real-looking WiFi PSK" % rel)
+            ok = False
+    if re.search(r"\b192\.168\.\d+\.\d+\b", t):
+        print("[FAIL] %s hardcodes a LAN address" % rel)
+        ok = False
+print("[pass] tracked samples exist and hold placeholders only")
+
+# the env sample must not document knobs no source reads (PARK_UI_WIFI was
+# documented in the acceptance doc for a while before it was actually wired up)
+envt = (REPO / "deploy/sample_park-ui.env").read_text(encoding="utf-8",
+                                                      errors="replace")
+srcs = "".join(p.read_text(encoding="utf-8", errors="replace")
+               for p in sorted(SRC.glob("*.cpp")))
+for name in ["PARK_UI_TTY", "PARK_UI_K210_FLIP", "PARK_UI_WIFI",
+             "PARK_WPA_CONF", "PARK_CLOUD_CONF"]:
+    if name in envt and name not in srcs:
+        print("[FAIL] sample_park-ui.env documents %s but no source reads it"
+              % name)
+        ok = False
+print("[pass] every knob in sample_park-ui.env is read by the code")
+
+# .gitignore must keep the live configs out of the index (samples stay tracked)
+gi = (REPO / ".gitignore").read_text(encoding="utf-8", errors="replace")
+for pat in ["cloud.conf", "core0.conf", "wpa_supplicant.conf", "park-ui.env",
+            "key.txt"]:
+    if pat not in gi:
+        print("[FAIL] .gitignore does not cover %s" % pat)
+        ok = False
+print("[pass] .gitignore covers every live runtime config")
+
+# 9. boot chain: this board's only link is WiFi and the vendor desktop service
+#    that used to raise wlan0 is disabled on purpose - so wifi-up.service must
+#    exist, must run the vendor's three steps, must avoid the procps tools this
+#    rootfs does not have, and must be ordered before park-clock/park-ui.
+#    (2026-09-11 user bug: after every power cycle the three commands had to be
+#    typed by hand; a link with no lease then looked like a cloud failure.)
+DEPLOY = REPO / "deploy/systemd"
+wifi_sh = DEPLOY / "wifi_up.sh"
+wifi_svc = DEPLOY / "wifi-up.service"
+for p in [wifi_sh, wifi_svc]:
+    if not p.exists():
+        print("[FAIL] missing %s" % p.name)
+        ok = False
+if wifi_sh.exists():
+    t = wifi_sh.read_text(encoding="utf-8", errors="replace")
+    if any(ord(c) > 127 for c in t):
+        print("[FAIL] wifi_up.sh is not pure ASCII")
+        ok = False
+    for needle in ["link set", "-B -D nl80211", "udhcpc", "PARK_UI_WIFI",
+                   "PARK_WPA_CONF", "/proc/[0-9]*", "grep -q 'inet '"]:
+        if needle not in t:
+            print("[FAIL] wifi_up.sh misses '%s'" % needle)
+            ok = False
+    for tool in ["pgrep ", "pkill ", "timeout "]:
+        if tool in t:
+            print("[FAIL] wifi_up.sh uses '%s' (absent on the board)" % tool)
+            ok = False
+    if "psk" in t.lower():
+        print("[FAIL] wifi_up.sh mentions the WiFi passphrase")
+        ok = False
+if wifi_svc.exists():
+    t = wifi_svc.read_text(encoding="utf-8", errors="replace")
+    for needle in ["Before=park-clock.service", "After=board-power.service",
+                   "/opt/park_ui/tools/wifi_up.sh",
+                   "EnvironmentFile=-/etc/park-ui.env"]:
+        if needle not in t:
+            print("[FAIL] wifi-up.service misses '%s'" % needle)
+            ok = False
+for unit in ["park-ui.service", "park-clock.service"]:
+    t = (DEPLOY / unit).read_text(encoding="utf-8", errors="replace")
+    if "wifi-up.service" not in t:
+        print("[FAIL] %s does not order itself against wifi-up.service" % unit)
+        ok = False
+ia = (DEPLOY / "install_all.sh").read_text(encoding="utf-8", errors="replace")
+for needle in ["wifi_up.sh", "wifi-up.service",
+               "systemctl enable wifi-up.service"]:
+    if needle not in ia:
+        print("[FAIL] install_all.sh misses '%s'" % needle)
+        ok = False
+print("[pass] WiFi is raised at boot (wifi-up.service + vendor recipe)")
+
+# 9b. a dead link must be reported as "no network", not as a broken transport:
+#     the wrong wording sends the next debugging session into the wrong layer.
+cct = (SRC / "cloud_client.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["looksLikeNetworkDown", "no network", "looksLikeCertFailure",
+               "certificate verify failed", "verify_message"]:
+    if needle not in cct:
+        print("[FAIL] cloud_client does not classify a dead link (%s)" % needle)
+        ok = False
+mjt = (SRC / "main.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["wifi:lease=", "systemctl restart wifi-up", "/etc/park/ca.pem"]:
+    if needle not in mjt:
+        print("[FAIL] main.cpp cloud failure has no link-state hint (%s)"
+              % needle)
+        ok = False
+if "wifi:ip=" in mjt:
+    print("[FAIL] main.cpp logs the address again")
+    ok = False
+print("[pass] a dead link reports 'no network' + the wifi-up hint")
+
+# 9c. file locations must not lie: the step-7 cloud code lives in the park_ui
+#     process (src/cloud_*.{h,cpp}). Two empty placeholder directories from the
+#     original plan used to sit in the tree and made reviewers look in the wrong
+#     place (2026-09-11: "core0_service/cloud has no code, I cannot check it").
+for dead in [REPO / "core0_service" / "cloud", REPO / "core1_ui" / "cloud_api"]:
+    if dead.exists():
+        print("[FAIL] dead placeholder dir is back: %s" % dead.name)
+        ok = False
+cli = (SRC / "cloud_client.cpp").read_text(encoding="utf-8", errors="replace")
+cli += (SRC / "cloud_settings.cpp").read_text(encoding="utf-8", errors="replace")
+if "QNetworkAccessManager" not in cli:
+    print("[FAIL] the cloud transport is not in the park_ui sources")
+    ok = False
+print("[pass] cloud code lives only in park_ui (no dead placeholder dirs)")
+
+# 9d. the clock is a cloud-critical dependency on this RTC-less board: a single
+#     failed sync at boot leaves 2020 and every HTTPS request dies with
+#     "certificate is not yet valid" (2026-09-11 real incident, reported as a
+#     cloud bug). So: retries inside the helper, a re-sync timer, and an
+#     unconditional success line in the journal.
+clock_py = (DEPLOY / "set_clock.py").read_text(encoding="utf-8", errors="replace")
+try:
+    import ast
+    ast.parse(clock_py)
+except SyntaxError as exc:
+    print("[FAIL] set_clock.py does not parse: %s" % exc)
+    ok = False
+for needle in ["--retries", "--delay", "set_clock: clock set to",
+               "date -u -s", "FAILED after"]:
+    if needle not in clock_py:
+        print("[FAIL] set_clock.py misses '%s'" % needle)
+        ok = False
+clock_svc = (DEPLOY / "park-clock.service").read_text(encoding="utf-8",
+                                                      errors="replace")
+for needle in ["--retries 8", "TimeoutStartSec=180", "wifi-up.service"]:
+    if needle not in clock_svc:
+        print("[FAIL] park-clock.service misses '%s'" % needle)
+        ok = False
+clock_timer = DEPLOY / "park-clock.timer"
+if not clock_timer.exists():
+    print("[FAIL] park-clock.timer is missing (no second chance for the clock)")
+    ok = False
+else:
+    t = clock_timer.read_text(encoding="utf-8", errors="replace")
+    for needle in ["OnBootSec=3min", "Unit=park-clock.service"]:
+        if needle not in t:
+            print("[FAIL] park-clock.timer misses '%s'" % needle)
+            ok = False
+if "park-clock.timer" not in ia:
+    print("[FAIL] install_all.sh does not install/enable park-clock.timer")
+    ok = False
+print("[pass] clock sync retries + re-sync timer + journal success line")
+
+# 9e. an HTTP 200 with an unparseable body must say WHAT came back: "body 795B"
+#     alone cannot tell a wrong model from a truncated/filtered answer
+#     (2026-09-11 real incident: "FAILED empty content: body 795B").
+for needle in ["collapseForLog", "empty content", "reasoning_content",
+               "finish_reason", "max_tokens\"), 256"]:
+    if needle not in cct:
+        print("[FAIL] cloud_client does not explain an unreadable body (%s)"
+              % needle)
+        ok = False
+print("[pass] unreadable bodies are reported with a snippet + reason")
+
+# 9f. the network page must be able to run the vendor recipe on demand: the
+#     link is otherwise only raised at boot (wifi-up.service) or by CONNECT,
+#     so a board installed before that unit existed cannot be recovered from
+#     the panel (2026-09-11 user request).
+wmh = (SRC / "wifi_manager.h").read_text(encoding="utf-8", errors="replace")
+wmc2 = (SRC / "wifi_manager.cpp").read_text(encoding="utf-8", errors="replace")
+spt = (SRC / "settingspage.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["void bringUp();"]:
+    if needle not in wmh:
+        print("[FAIL] WifiManager has no bringUp() slot")
+        ok = False
+for needle in ["void WifiManager::bringUp()", "m_bringUp = true",
+               "no rollback timer"]:
+    if needle not in wmc2:
+        print("[FAIL] wifi_manager bringUp is incomplete (%s)" % needle)
+        ok = False
+if "bringUp()" not in spt or "m_btnNetUp" not in spt:
+    print("[FAIL] the network page has no bring-up button")
+    ok = False
+print("[pass] the network page can run the vendor wifi recipe on demand")
+
+# 9g. the clock must be settable from the panel: a board with no RTC and no
+#     network at boot sits in 2020, and then every HTTPS call fails with
+#     "certificate is not yet valid" (2026-09-11 real incident). SYNC runs the
+#     same helper as park-clock.service, SETTIME writes an operator-typed UTC
+#     stamp through date(1) (argv, no shell) after a strict shape check.
+for needle in ["refreshClock", "onClockSet", "onClockSync", "m_lblClock",
+               "m_btnClockSync", "m_btnClockSet", "NOT SET: cloud TLS will fail",
+               "/opt/park_ui/set_clock.py", "clockToolPath"]:
+    if needle not in spt:
+        print("[FAIL] settingspage cannot set the clock (%s)" % needle)
+        ok = False
+if "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$" not in spt:
+    print("[FAIL] the typed clock value is not shape-checked")
+    ok = False
+print("[pass] the diag page shows the UTC clock and can SYNC / SET it")
+
+# 9h. saving the network settings must rewrite /etc/wpa_supplicant.conf in the
+#     vendor layout (ctrl_interface / update_config / ap_scan + one network
+#     block). CONNECT writes AND applies and rolls back on a failed lease, so a
+#     save-only action is needed (2026-09-11 user request).
+for needle in ["void saveConfig(const QString &ssid, const QString &psk);"]:
+    if needle not in wmh:
+        print("[FAIL] WifiManager has no saveConfig() slot")
+        ok = False
+for needle in ["void WifiManager::saveConfig", "ctrl_interface=/var/run/wpa_supplicant",
+               "update_config=1", "ap_scan=1", "network={"]:
+    if needle not in wmc2:
+        print("[FAIL] the wifi config writer misses '%s'" % needle)
+        ok = False
+if "saveConfig(" not in spt or "onSaveNetwork" not in spt:
+    print("[FAIL] the network page has no save-only button")
+    ok = False
+print("[pass] network edits can be written to wpa_supplicant.conf (vendor layout)")
+
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

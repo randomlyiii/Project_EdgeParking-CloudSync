@@ -2,7 +2,7 @@
  * app_config.h - local config file: the single source of truth for all
  * tunable business parameters (P4-05, spec 5.5).
  *
- * File format (see core0.conf.example):
+ * File format (see sample_core0.conf):
  *   [settings]  key = value lines
  *   [whitelist] one plate per line: "<plate> [allow|deny] [YYYY-MM-DD]"
  *
