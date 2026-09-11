@@ -11,7 +11,7 @@
 | 门 | 判定条件 |
 |---|---|
 | L1 静态 | `python3 tools/check_static.py` → `RESULT: PASS` |
-| L2 起来 | park-ui 起来后 journal 有 `cloud: config ... (loaded)`，屏上底栏 `WIFI:` 与 `CLOUD:` 芯片有值（不是 `CLOUD:--`） |
+| L2 起来 | park-ui 起来后 journal 有 `cloud: config ... (loaded)`，屏上底栏 `WIFI:` 与 `CLOUD:` 芯片有值（不是 `CLOUD:--`）；**`systemctl is-active wifi-up park-clock` 都是 active**，`journalctl -u wifi-up` 有 `wlan0 online (ssid=...)`（开机自动联网，2026-09-11 修） |
 | L3 功能 | 下表 G7-A ~ G7-I 全过（G7-G 需要能改 WiFi；没有则记"未测"） |
 | 红线 | 断网/云 5xx/无 key 三种情况下，本地"车到位→识别→开闸/降级"闭环完全不受影响 |
 
@@ -91,12 +91,12 @@ mkdir -p /opt/park_ui
 cp /root/park_ui /opt/park_ui/park_ui
 chmod +x /opt/park_ui/park_ui
 install -d -m 700 /etc/park
-install -m 600 /root/deploy/cloud.conf.example /etc/park/cloud.conf
+install -m 600 /root/deploy/sample_cloud.conf /etc/park/cloud.conf
 vi /etc/park/cloud.conf      # 填 api_key=sk-...(或 export DEEPSEEK_API_KEY)
 systemctl restart park-ui
 ```
 
-`deploy/systemd/install_all.sh` 的 **[7/8]** 步会自动做上面 `install -d/-m`（**已存在则不覆盖**，key 不会丢）。
+`deploy/systemd/install_all.sh` 的 **[8/9]** 步会自动做上面 `install -d/-m`（**已存在则不覆盖**，key 不会丢）。
 
 ### 2.4 期望日志（journalctl -u park-ui -n 30 --no-pager）
 
@@ -190,6 +190,8 @@ for i in range(20):
 **先准备好退路**：串口控制台或网口，或者保证 20s 回滚可用。
 
 1. **连接状态**：设置页「网络」页签 → `REFRESH` → 期望显示 `wlan0: <state>  ssid=<ssid>  signal=<0..100>`（**故意不含 IP/网关**），连通性结论与 `ip -4 addr show wlan0`、`iw dev wlan0 link` 一致；底栏 WIFI 芯片同步（2s 内）；
+   - **`保存` 按钮（2026-09-11 加）**：把当前 SSID/密码**只写进** `/etc/wpa_supplicant.conf`（厂商布局：`ctrl_interface` / `update_config=1` / `ap_scan=1` + 一个 `network{ ssid, psk, key_mgmt }`），**不动正在跑的链路、也不回滚**；状态行 `saved to /etc/wpa_supplicant.conf - press CONNECT (or bring up) to activate`。与 `CONNECT` 的区别：`CONNECT` 是"写 + 应用 + 20s 无租约就把文件回滚成旧的"，所以**只想改文件内容时用 `保存`**（`.bak` 只在第一次保存时生成，反复保存不会覆盖掉厂商原件）。
+   - **`联网` 按钮**：见下一条（用当前配置文件跑厂商三步）；
 2. **扫描**：`SCAN` → 列表出现周围 SSID（无 `iw` 时退 `wpa_cli scan` + 3s + `scan_results`）；
 3. **故意改错密码**：
    - 输入正确 SSID + 错误密码 → `CONNECT`；
@@ -252,9 +254,12 @@ KPI 量测口径（写进报告）：
 | `CLOUD:no key` | `/etc/park/cloud.conf` 的 `api_key=` 空且无 `$DEEPSEEK_API_KEY`；设置页输入或 `vi` 填 |
 | **测试连接/复检永远 5s 超时，但 python 同一条请求拿到 HTTP 200**（2026-09-11 真机定案） | **本板 Qt 5.12.8 + OpenSSL 1.1.1 在 TLS 1.3 协商上卡死**（python 0.2s 握手成功、Qt 烧满超时；网络/时钟/CA/key 都已逐项排除）。已内置 **`transport=auto`**：Qt 失败即自动改用 **python3 子进程**发请求，并在本进程内保持 python 通道 ⇒ 第一次点击约 6s（5s 探测 + 1s 成功），之后每次约 1s。想连那 5s 都省掉就写 `transport=python`。日志特征：`cloud: qt transport failed (timeout) - switching to python3` → `cloud: python transport ok in N ms (http 200)` |
 | 云端一直 failed 且日志是 `tls handshake failed` | 看时间（`date -u` 必须是真实年份，本板无 RTC → `deploy/systemd/park-clock.service`）与 `CA=` 是否为 `NONE` |
+| **日志是 `certificate is not yet valid` / `date -u` 显示 2020**（2026-09-11 真机事故） | **时钟问题，不是云问题**：设置页「诊断」页签现在有一行 `UTC yyyy-MM-dd HH:mm:ss`（年份 <2025 会跟一句 `NOT SET: cloud TLS will fail`）+ 两个按钮：**`同步`** = 跑 `set_clock.py`（HTTP Date，同 `park-clock.service`）、**`改时间`** = 软键盘输入 UTC 时间后 `date -u -s`（严格校验 `YYYY-MM-DD HH:MM:SS`，直接以 argv 传给 `date`，不经 shell）。命令行等价：`date -u -s "YYYY-MM-DD HH:MM:SS"` |
 | 设置页改了不生效/重启丢失 | `/etc/park` 不可写（权限/只读根文件系统）→ 看状态行是否 `SAVE FAILED`；`PARK_CLOUD_CONF` 指到可写路径 |
 | `cloud: no K210 frame yet` | `/dev/ttyACM0` 没帧 → 查 K210 固件/`board-power.service`（USB 供电，见 AGENTS 记忆） |
 | `CLOUD:兜底中` 卡住 | 不该发生：任何出口都会清 `cloud_pending`。若卡住 → 看 journal 是否有 `cloud: FAILED/unreadable`，以及 `IpcWriter::clearCloudPending` 是否被 `attachShm` 失败挡掉 |
+| **每次开机都要手敲 `ip link set wlan0 up` / `wpa_supplicant` / `udhcpc`**（2026-09-11 用户报） | 开机联网原本由厂商桌面 `myir.service` 完成，我们禁用它后没人接手 ⇒ 已加 **`wifi-up.service`**（`install_all.sh` 的 `[4/9]` 步）。检查：`systemctl is-active wifi-up`、`journalctl -u wifi-up`；改完 wpa 配置 `systemctl restart wifi-up` |
+| **云检测失败，屏幕/日志是 `python transport` 或 `cloud: FAILED`**（2026-09-11 用户报） | 十有八九是**没网**而不是云坏了。新版失败行会写 `[wifi:lease=no ...]`，reason 也分类成 `no network`；先 `systemctl restart wifi-up`。旧版把"无租约"错报成 `python transport failed` |
 | 改了 WiFi 后 SSH 断且不回来 | 回滚应在 20s 内发生；若没有 → 串口进去 `cp /etc/wpa_supplicant.conf.bak /etc/wpa_supplicant.conf` 再跑设置页 `RESTORE` |
 | 芯片一直 `WIFI:down`，但串口里 `ip -4 addr show wlan0` 有地址 | `wlan0` 名字不同 → 用 `PARK_UI_WIFI=wlan1` 之类覆盖（`WifiManager::setInterface`）或改代码默认值 |
 | 启动报 `QNetworkAccessManager` 相关未定义 | `.pro` 少了 `QT += network`，或 `make` 前没 `qmake` 重生成 Makefile |
