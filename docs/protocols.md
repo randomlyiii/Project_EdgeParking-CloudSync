@@ -163,12 +163,77 @@
 | bit3 | CAN 错误（0x23 上抛的 CAN 错误计数非零） |
 | bit4 | 云兜底失败（第7步起生效，本步预留） |
 
-## 5. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
+## 5. 云端 HTTP（Core1 `park_ui` → OpenAI 兼容 `/chat/completions`）—— 第7步实现（2026-09-11 拷入）
+
+**通道性质**：单向请求/响应（HTTPS，无长连接、无轮询）。**只有 Core1 能发起**（PhaseMd/08：Core0 禁云请求；静态门禁 `core1_ui/qt_gui/tools/check_static.py` 扫 `core0_service/` 有无 curl/QNetwork）。传输层实现 = Qt Network（`QNetworkAccessManager`，板端 Qt 5.12.8 自带；**不用 libcurl**）。**`transport=` 三档**：`auto`（默认，Qt 失败自动切 python3 子进程并在本进程内保持）/ `qt`（只用 Qt）/ `python`（只用 python3）；起因是**本板 Qt 5.12.8 + OpenSSL 1.1.1 在 TLS 1.3 协商上卡死**（2026-09-11 实测：同一条请求 python 0.2s 握手、Qt 超时），python 通道用标准库 `urllib`+`ssl`，脚本内嵌在二进制里（无需部署额外文件），job 文件（含 key）写 `/tmp`、0600、进程退出即删。**代理默认强制直连**（`QNetworkProxy::NoProxy`），`proxy=` 可设 `env` 或 `http://host:port`。
+
+### 5.1 请求
+
+```
+POST <apiBase>                       # 默认 https://api.deepseek.com/chat/completions
+Content-Type: application/json
+Authorization: Bearer <apiKey>       # key 只在内存 + /etc/park/cloud.conf，永不进日志
+
+{"model":"<model>",                  # 默认 deepseek-chat；设置页可改或轮换预设
+ "messages":[{"role":"user","content":[
+   {"type":"text","text":"<prompt>"},
+   {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,<...>"}}]}],
+ "max_tokens":64,"temperature":0}
+```
+
+| 项 | 取值/约束 |
+|---|---|
+| 图像 | **最近一帧 K210 预览**（`K210Link::latestFrame()` 非消费取帧），JPEG q70 → base64，帧 ≤ ~10KB、body ≈ 13KB |
+| `<prompt>` | 可配置（默认见 `cloud_settings_defaults()`），要求**只输出 JSON**：`{"plate":"省份简称+字母+5位","confidence":0.95}`，识别不到则空串+0 |
+| 超时 | `timeoutMs` 默认 **5000ms** 硬上限（`QTimer` → `reply->abort()`；Qt 5.12 **无** `setTransferTimeout`） |
+| 重试 | **≤1 次且仅传输类错误**；4xx/5xx 不重试 |
+| 并发 | **单次触发单次调用**，同一时刻只允许一个在飞请求（`busy` 时新请求被忽略并记日志） |
+
+### 5.2 响应与容错解析
+
+`choices[0].message.content` → 文本；`error` 字段存在则直接判失败（key/余额/限流的中文提示原样进滑窗）。
+
+解析链（三级容错，任一级失败 = "云兜底失败"，**不置 `result_valid`**）：
+1. 去 ``` 围栏、去前后杂文；
+2. **括号配对扫描**出第一个平衡的 JSON 对象（容忍截断/多余文字）；
+3. `QJsonDocument` 解析 → `plate` 非空且 UTF-8 字节 ≤15（与 shm `plate[16]` 对齐，超出截断）、`confidence` 夹取到 [0,1]。
+
+| 结果分类 | 条件 | Core1 动作 |
+|---|---|---|
+| accepted | HTTP 200 且 `plate` 非空且 `confidence >= acceptConf`（默认 0.50） | `IpcWriter::onCloudResult()` → shm `plate/confidence/result_source=1` + `result_valid=1` + `evt RESULT`，清 `cloud_pending` |
+| unreadable | HTTP 200 但无车牌/置信度低于 `acceptConf` | 清 `cloud_pending`，不写结果（走降级） |
+| failed | 传输错误/超时/非 200/解析失败 | 清 `cloud_pending`，滑窗提示（401 key、402 余额、404 模型名、429 限流、5xx 服务端） |
+
+### 5.3 与 Core0 的衔接（P7-04 定稿）
+
+低置信或端侧失败时，`IpcWriter` 置 shm `cloud_pending=1` 并 `emit cloudFallbackRequested(reason)`；`main.cpp` 据此（受"自动兜底"开关约束）取最新帧发云请求。**任何出口**（accepted/unreadable/failed/开关关闭/无帧）都会落到 `onCloudResult()` 或 `clearCloudPending()` ⇒ `cloud_pending` 必然归零 ⇒ Core0 的 3s→6s 延长必然收敛。
+
+### 5.4 配置与密钥（P7-07）
+
+`/etc/park/cloud.conf`（`key=value` 纯 ASCII，模式 600；`$PARK_CLOUD_CONF` 改路径、`$DEEPSEEK_API_KEY` 在 key 为空时注入）。字段：`api_base/api_key/model/prompt/trigger_conf/accept_conf/timeout_ms/retry/ca_file/proxy/transport/auto_fallback/writeback/insecure_tls/fake_result` **+ 每个 provider 一把 key 的 `key_<provider>=`**（provider id 由 endpoint host 判定：`deepseek`/`dashscope`/`openai`/`custom`）。`api_key` 是**当前生效**那把，`key_<provider>` 是各家的备份 key——LCD 的 PRESET 切模型时会同时切 endpoint 并**自动取用该 provider 的 key**（否则会拿上一家的 key 去请求，服务端回 `incorrect api key`；这是板上实测踩过的坑）。保存走 `QSaveFile` 原子替换 + 旧内容留 `.bak`，落盘后强制 0600。**该文件在仓库外 ⇒ 天然不入 git**，代码与文档里只出现 `cloud_settings_mask_key()` 的 `sk-abcd...wxyz` 掩码。
+
+**TLS/CA（板级事实，2026-09-11 实测）**：本板 rootfs **没有** `/etc/ssl/certs/ca-certificates.crt`（有 `libssl.so.1.1`/`libcrypto.so.1.1`，无 `curl`）。CA 查找顺序 = `ca_file=` → `/etc/park/ca.pem` → 系统常规位置；三者皆无时 HTTPS 必然失败，日志与设置页明确报 `CA=NONE` 并给出"装 CA 或临时 `insecure_tls=1`"的处置。启动还会打印 `QSslSocket::supportsSsl()` 与 SSL 库版本（判断 Qt 是否编进了 OpenSSL）。
+
+### 5.5 阈值口径（不新增端侧阈值）
+
+| 阈值 | 归属 | 默认 | 作用 |
+|---|---|---|---|
+| `conf_threshold` | **Core0**（shm 偏移 56） | 0.60 | 端侧判"低置信"（Core0 业务用） |
+| `trigger_conf` | Core1（cloud.conf） | 0.60 | **是否发起云请求**（设置页可改） |
+| `accept_conf` | Core1（cloud.conf） | 0.50 | **是否接受云答案**（设置页可改） |
+
+设置页只读展示 Core0 的 `conf_threshold`（spec 5.5.1：端侧阈值只允许一个）。
+
+### 5.6 WiFi 配置（板载唯一网络链路，非协议但同属第7步运维面）
+
+`ip link set wlan0 up` → `wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf` → `udhcpc -i wlan0 -n -q -t 5 -T 3`；写配置前备份 `/etc/wpa_supplicant.conf.bak`，**20s 内未拿到 IPv4 自动回滚并重新应用**（改 WiFi 等于拆自己脚下的 SSH 梯子）。板端无 `pgrep/pkill/timeout`，杀旧 `wpa_supplicant` 用 `/proc` 扫描（并跳过 `$$`）。
+
+## 6. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
 
 | 通道 | 内容概要 | 状态 |
 |---|---|---|
 | Modbus-TCP 寄存器表（Core0 ↔ 上位机） | 原 0x0000~0x0041 寄存器映射 | **已废弃**（2026-09-11：Demo 无上位机；监控归 Core1 UI 读共享内存、远程控制走 0x11/0x12、白名单改本地配置热加载） |
-| 云端（Core1 → DeepSeek；可选 MQTT） | Vision API 请求/响应、MQTT 主题 | 第7步实现时拷入 |
+| MQTT 上报主题（可选，P7-08~10） | `park/{sn}/status|events|cmd` | 第7步可选项，未实现（接口预留） |
 
 ## 变更记录
 
@@ -179,3 +244,4 @@
 | 2026-09-08 | M4 位时序二次更正：运行环境时钟不同（工程模式=PLL3Q 100MHz，Linux 引导=62.5MHz），静态配法不可两全 → 改为启动实测 + 自动换算（FDCAN2_AutotuneBitTiming） | M4 |
 | 2026-09-08 | 新增 0x110 主→从 事件确认帧：主端收 0x200 自动回执(d[0] 回显事件码)，从端 OLED 行4 显示 `CAN:*OK*` | M4 / C8T6 |
 | 2026-09-11 | 共享内存正式拷入为 §4（v3）：`park_shm_t` 全字段/偏移、事件码与**跨进程事件通道**（匿名 eventfd 不可跨进程 → 改用 `evt_bits_c0/c1`+`evt_seq_c0/c1`，200ms 轮询）、Core0/Core1 字段归属、故障字位定义；同时明确 Core1 必须 `O_RDWR` 挂载（只读会让心跳/结果写不进 → Core0 判失联）。头文件加编译期布局断言（sizeof=76）。Modbus-TCP 通道标记废弃 | Core0 / Core1 |
+| 2026-09-11 | 新增 §5 云端 HTTP 通道（第7步）：OpenAI 兼容 `/chat/completions` 请求体、base64 图像、三级容错解析、accepted/unreadable/failed 三分类、超时 5s/重试 ≤1/单次触发、`cloud_pending` 收敛保证、三阈值口径（Core0 `conf_threshold` vs Core1 `trigger_conf`/`accept_conf`）、`/etc/park/cloud.conf` 密钥策略、WiFi 三步配置 + 20s 回滚；§6 保留"尚未拷入"（MQTT 可选） | Core1（Core0 禁云请求） |
