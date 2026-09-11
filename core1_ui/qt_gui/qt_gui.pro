@@ -4,7 +4,7 @@
 #   qmake && make
 # Cross build (align with 100ASK/ST SDK, sysroot = board rootfs):
 #   source <sdk-env>/environment-setup-... && qmake && make
-QT       += core gui widgets
+QT       += core gui widgets network
 CONFIG   += c++11
 TARGET    = park_ui
 TEMPLATE  = app
@@ -14,14 +14,24 @@ SOURCES += \
     src/mainwindow.cpp \
     src/k210_link.cpp \
     src/ipc_reader.cpp \
-    src/ipc_writer.cpp
+    src/ipc_writer.cpp \
+    src/cloud_settings.cpp \
+    src/cloud_client.cpp \
+    src/wifi_manager.cpp \
+    src/softkeyboard.cpp \
+    src/settingspage.cpp
 
 HEADERS += \
     src/mainwindow.h \
     src/k210_link.h \
     src/ipc_reader.h \
     src/ipc_writer.h \
-    src/park_shm.h
+    src/park_shm.h \
+    src/cloud_settings.h \
+    src/cloud_client.h \
+    src/wifi_manager.h \
+    src/softkeyboard.h \
+    src/settingspage.h
 
 # shm_open() lives in librt on older glibc
 unix:!macx: LIBS += -lrt

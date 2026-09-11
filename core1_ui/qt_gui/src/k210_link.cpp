@@ -98,6 +98,17 @@ public slots:
         return true;
     }
 
+    /* Non-consuming copy: the cloud fallback needs the current frame while the
+     * UI keeps pulling frames for display at its own pace. */
+    bool latestFrame(QImage *out)
+    {
+        QMutexLocker lk(&m_mutex);
+        if (m_latest.isNull())
+            return false;
+        *out = m_latest;
+        return true;
+    }
+
     void setUp(bool up)
     {
         if (m_up != up)
@@ -650,6 +661,11 @@ void K210Link::stop()
 bool K210Link::takeFrame(QImage *out)
 {
     return m_worker ? m_worker->takeFrame(out) : false;
+}
+
+bool K210Link::latestFrame(QImage *out)
+{
+    return m_worker ? m_worker->latestFrame(out) : false;
 }
 
 #include "k210_link.moc"

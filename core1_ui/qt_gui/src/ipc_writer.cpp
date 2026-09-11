@@ -146,7 +146,24 @@ void IpcWriter::onRecogResult(const QString &plate, double confidence,
             "ipc-writer: low confidence %1 < %2 -> cloud pending")
                               .arg(confidence, 0, 'f', 2)
                               .arg(thr, 0, 'f', 2));
+        /* step 7: hand the decision to the application (CloudClient) */
+        emit cloudFallbackRequested(QStringLiteral("edge conf %1 < %2")
+                                        .arg(confidence, 0, 'f', 2)
+                                        .arg(thr, 0, 'f', 2));
     }
+}
+
+/* End of a cloud attempt with no usable plate: cloud_pending must go back to 0
+ * so Core0 stops extending the recognition timeout (spec P7-04 / 5.4.1.3). */
+void IpcWriter::clearCloudPending()
+{
+    if (!m_shm)
+        return;
+    if (m_shm->cloud_pending == 0)
+        return;
+    m_shm->cloud_pending = 0;
+    emit cloudPendingChanged(false);
+    emit eventMessage(QStringLiteral("ipc-writer: cloud_pending cleared"));
 }
 
 void IpcWriter::onRecogFailed(const QString &reason)
@@ -161,6 +178,7 @@ void IpcWriter::onRecogFailed(const QString &reason)
     emit eventMessage(QStringLiteral(
                           "ipc-writer: recog failed -> cloud pending: %1")
                           .arg(reason));
+    emit cloudFallbackRequested(QStringLiteral("edge failed: %1").arg(reason));
 }
 
 void IpcWriter::onCloudResult(const QString &plate, double confidence)

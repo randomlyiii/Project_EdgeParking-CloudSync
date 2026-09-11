@@ -38,6 +38,9 @@ public:
 
     /* Returns true and moves the newest undisplayed frame into *out. */
     bool takeFrame(QImage *out);
+    /* Copies the newest decoded frame WITHOUT consuming it - used as the image
+     * source of the step-7 cloud fallback (the UI keeps its own cadence). */
+    bool latestFrame(QImage *out);
     bool isUp() const { return m_up; }
 
 signals:

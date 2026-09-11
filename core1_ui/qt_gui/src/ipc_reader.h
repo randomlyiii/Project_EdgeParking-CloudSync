@@ -26,6 +26,7 @@ struct IpcSnapshot
     bool gateOpen = false;
     bool recogPending = false;
     bool cloudPending = false;  /* core1 write-end: cloud fallback in flight */
+    double confThreshold = 0.0; /* Core0-authoritative recognition threshold */
     quint8 linkFlags = 0;       /* bit0 rpmsg bit1 m4 bit2 core1 */
     QString plate;              /* persistent last plate (may be empty) */
     double confidence = 0.0;

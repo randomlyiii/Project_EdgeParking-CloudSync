@@ -57,6 +57,7 @@ bool IpcReader::readShm(IpcSnapshot *out)
             out->gateOpen = tmp.gate_state != 0;
             out->recogPending = tmp.recog_pending != 0;
             out->cloudPending = tmp.cloud_pending != 0;
+            out->confThreshold = double(tmp.conf_threshold);
             out->linkFlags = tmp.link_flags;
             out->plate = QString::fromUtf8(tmp.plate);
             out->confidence = tmp.confidence;
@@ -199,6 +200,7 @@ void IpcReader::onTick()
                 s.gateOpen != m_snap.gateOpen ||
                 s.recogPending != m_snap.recogPending ||
                 s.cloudPending != m_snap.cloudPending ||
+                s.confThreshold != m_snap.confThreshold ||
                 s.linkFlags != m_snap.linkFlags ||
                 s.plate != m_snap.plate ||
                 s.confidence != m_snap.confidence ||

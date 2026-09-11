@@ -42,11 +42,18 @@ public slots:
     void requestGateClose();
     /* cloud fallback write-back (reserved for step 7; source=1) */
     void onCloudResult(const QString &plate, double confidence);
+    /* step 7: end of a cloud attempt with no usable answer -> back to 0 */
+    /* (P7-04) */
+    void clearCloudPending();
 
 signals:
     void eventMessage(const QString &line);
     void cloudPendingChanged(bool pending);
     void snapshotRefreshRequested();    /* STATE/RESYNC c0 event -> UI refresh */
+    /* Raised when an edge result is below the threshold or failed: the
+     * application decides whether the cloud is actually called (P7-06) and
+     * wires this to CloudClient. */
+    void cloudFallbackRequested(const QString &reason);
 
 private slots:
     void onHeartbeat();                 /* 1000 ms: hb_core1 atomic increment */

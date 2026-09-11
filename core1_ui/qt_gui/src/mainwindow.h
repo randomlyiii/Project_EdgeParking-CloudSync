@@ -38,6 +38,8 @@ public:
 
 signals:
     void gateRequested(bool open);   /* open=true open gate, false close */
+    void cloudCheckRequested();      /* operator asked for a cloud re-check */
+    void coreThresholdChanged(double thr, bool valid); /* -> settings page */
 
 public slots:
     void pushEvent(const QString &line);
@@ -51,10 +53,18 @@ public slots:
     void onRecogFailed(const QString &reason);
     void onK210Busy(bool busy);
     void onCloudPending(bool pending);
+    /* step 7 status chips: wifi link and cloud health */
+    void setWifiChip(const QString &text, bool ok);
+    void setCloudChip(const QString &text, bool ok);
+    /* step 7: full-screen operator page (owned by main.cpp) */
+    void setSettingsPage(QWidget *page);
+    void openSettings();
+    void closeSettings();
 
 protected:
     void showEvent(QShowEvent *e) override;   /* logs the real window size */
     void keyPressEvent(QKeyEvent *e) override; /* gate open/close hotkeys */
+    void resizeEvent(QResizeEvent *e) override; /* keep the page full-screen */
 
 private slots:
     void onFrameTick();     /* 100 ms: pull newest decoded frame */
@@ -63,7 +73,6 @@ private slots:
 
 private:
     void buildUi();
-    QLabel *makeStatusChip();
     void applySnapshot(const IpcSnapshot &s);
     void updateBadge();
     void applyCloudChip();
@@ -78,8 +87,11 @@ private:
     QLabel *m_lblM4 = nullptr;
     QLabel *m_lblCore1 = nullptr;
     QLabel *m_lblCloud = nullptr;
+    QLabel *m_lblWifi = nullptr;        /* step 7: wlan0 link state */
     QLabel *m_lblClock = nullptr;
     CloudState m_cloudState = Unknown;
+    QString m_cloudHealth;              /* step 7: cloud-client health text */
+    bool m_cloudHealthOk = false;
 
     /* --- preview --- */
     QWidget *m_previewBox = nullptr;
@@ -100,6 +112,9 @@ private:
     /* operator gate trigger (spec 5.6): buttons emit gateRequested() */
     QPushButton *m_btnGateOpen = nullptr;
     QPushButton *m_btnGateClose = nullptr;
+    QPushButton *m_btnCloudCheck = nullptr;   /* step 7: manual cloud recheck */
+    QPushButton *m_btnSettings = nullptr;     /* step 7: gear -> settings page */
+    QWidget *m_settingsPage = nullptr;        /* owned by main.cpp */
 
     /* --- popup card --- */
     QWidget *m_popup = nullptr;

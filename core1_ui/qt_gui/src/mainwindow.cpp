@@ -2,13 +2,16 @@
 #include "k210_link.h"
 
 #include <QDateTime>
+#include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QFont>
 #include <QPalette>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
+#include <QSizePolicy>
 
 /* Chinese UI literals as UTF-8 escapes: keeps every source file pure ASCII
  * (board toolchain rule) while the on-screen text stays Chinese. */
@@ -32,12 +35,32 @@
 #define TXT_DEMO     "\xE6\xBC\x94\xE7\xA4\xBA"                                   /* demo          */
 #define TXT_GATECL   "\xE5\x85\xB3\xE9\x97\xB8"                                   /* close gate    */
 #define TXT_CLOUDBUSY "\xE5\x85\x9C\xE5\xBA\x95\xE4\xB8\xAD"                      /* fallback busy */
+#define TXT_CLOUDCHK "\xE4\xBA\x91\xE7\xAB\xAF\xE5\xA4\x8D\xE6\xA3\x80"            /* cloud recheck */
 
 static QLabel *statusChip(QWidget *parent)
 {
     QLabel *l = new QLabel(parent);
     l->setStyleSheet("QLabel{color:#cfd8dc;font-size:14px;}");
+    /* A QLabel's minimumSizeHint is its full text width: one long line (a cloud
+     * error detail, a long SSID) would then force the whole window wider than
+     * the 1024 px panel and push the right-hand panel off-screen. Preferred
+     * keeps the natural width while allowing a shrink, and an explicit
+     * minimumWidth(0) overrides the text-derived minimum. (Do NOT use
+     * QSizePolicy::Ignored here: "Ignored" means *greedy* - the chips then
+     * collapse to zero width and the status bar looks empty. Measured on the
+     * board 2026-09-11.) */
+    l->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    l->setMinimumWidth(0);
     return l;
+}
+
+/* Elide to a pixel budget so a chip cannot dominate the status bar. */
+static QString elide(const QLabel *l, const QString &text, int px)
+{
+    if (l == nullptr)
+        return text;
+    const QFontMetrics fm(l->font());
+    return fm.elidedText(text, Qt::ElideRight, px);
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -70,7 +93,13 @@ MainWindow::MainWindow(QWidget *parent)
     if (plat.contains("linuxfb") || plat.contains("eglfs")) {
         /* no window manager: an explicit geometry is the whole story.
          * showFullScreen() is deliberately NOT used - the fullscreen state
-         * left the window at its sizeHint here (see note above). */
+         * left the window at its sizeHint here (see note above).
+         * The maximum pins the window to the panel: Qt would otherwise grow it
+         * to the layout's minimumSize when a long text lands in a label, and
+         * everything past x=1024 (the whole right-hand panel) is unreadable on
+         * this display because there is no window manager to scroll it back. */
+        setMinimumSize(320, 200);
+        setMaximumSize(sg.size());
         setGeometry(sg);
     } else {
         resize(1024, 600);
@@ -131,14 +160,26 @@ void MainWindow::buildUi()
     m_lblRpmsg = statusChip(statusBar);
     m_lblM4 = statusChip(statusBar);
     m_lblCore1 = statusChip(statusBar);
+    m_lblWifi = statusChip(statusBar);      /* step 7 */
     m_lblCloud = statusChip(statusBar);
     m_lblClock = statusChip(statusBar);
     sb->addWidget(m_lblSys);
     sb->addWidget(m_lblRpmsg);
     sb->addWidget(m_lblM4);
     sb->addWidget(m_lblCore1);
+    sb->addWidget(m_lblWifi);
     sb->addWidget(m_lblCloud);
     sb->addStretch(1);
+    /* step 7: gear -> full-screen settings page (cloud / wifi / diagnostics) */
+    m_btnSettings = new QPushButton(QStringLiteral("SET"), statusBar);
+    m_btnSettings->setFixedSize(56, 26);
+    m_btnSettings->setFocusPolicy(Qt::NoFocus);
+    m_btnSettings->setStyleSheet(QStringLiteral(
+        "QPushButton{background:#37474f;color:#eceff1;font-size:14px;"
+        "border:1px solid #546e7a;border-radius:6px;}"
+        "QPushButton:pressed{background:#546e7a;}"));
+    connect(m_btnSettings, &QPushButton::clicked, this, &MainWindow::openSettings);
+    sb->addWidget(m_btnSettings);
     sb->addWidget(m_lblClock);
     root->addWidget(statusBar);
 
@@ -157,6 +198,10 @@ void MainWindow::buildUi()
     m_lblPreview->setAlignment(Qt::AlignCenter);
     m_lblPreview->setStyleSheet("QLabel{color:#546e7a;font-size:20px;}");
     m_lblPreview->setText(TXT_NOVIDEO);
+    /* the preview must be able to shrink: its pixmap size would otherwise feed
+     * back into the layout minimum */
+    m_lblPreview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    m_lblPreview->setMinimumSize(0, 0);
     pv->addWidget(m_lblPreview);
 
     m_lblBadge = new QLabel(m_previewBox);          /* top-right badge */
@@ -185,10 +230,14 @@ void MainWindow::buildUi()
     capPlate->setStyleSheet("QLabel{color:#90a4ae;font-size:16px;}");
     m_lblPlate = new QLabel("--", panel);
     m_lblPlate->setStyleSheet("QLabel{color:#eceff1;font-size:26px;font-weight:bold;}");
+    m_lblPlate->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    m_lblPlate->setMinimumWidth(0);
     m_lblSource = new QLabel(panel);
     m_lblSource->setStyleSheet("QLabel{color:#b0bec5;font-size:15px;}");
+    m_lblSource->setMinimumWidth(0);
     m_lblConf = new QLabel(panel);
     m_lblConf->setStyleSheet("QLabel{color:#b0bec5;font-size:15px;}");
+    m_lblConf->setMinimumWidth(0);
     pl->addWidget(capPlate);
     pl->addWidget(m_lblPlate);
     pl->addWidget(m_lblSource);
@@ -208,6 +257,11 @@ void MainWindow::buildUi()
     m_lblGate->setStyleSheet("QLabel{color:#cfd8dc;font-size:15px;}");
     m_lblEvents = new QLabel(bottom);
     m_lblEvents->setStyleSheet("QLabel{color:#90a4ae;font-size:14px;}");
+    /* the event ticker carries the longest strings on screen (cloud failures,
+     * K210 errors): it must clip, never push the buttons off the panel */
+    m_lblEvents->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    m_lblEvents->setMinimumWidth(0);
+    m_lblGate->setMinimumWidth(0);
 
     /* operator trigger source (core1 spec 5.6.1.3): the board has no keyboard,
      * so the gate buttons are the primary source; touch arrives as a mouse
@@ -226,14 +280,25 @@ void MainWindow::buildUi()
         "QPushButton{background:#4e342e;color:#efebe9;font-size:16px;"
         "border:1px solid #6d4c41;border-radius:6px;}"
         "QPushButton:pressed{background:#6d4c41;}");
+    /* step 7: ask the cloud about the current frame right now */
+    m_btnCloudCheck = new QPushButton(QString::fromUtf8(TXT_CLOUDCHK), bottom);
+    m_btnCloudCheck->setFixedSize(150, 32);
+    m_btnCloudCheck->setFocusPolicy(Qt::NoFocus);
+    m_btnCloudCheck->setStyleSheet(
+        "QPushButton{background:#0d47a1;color:#e3f2fd;font-size:16px;"
+        "border:1px solid #1565c0;border-radius:6px;}"
+        "QPushButton:pressed{background:#1565c0;}");
     connect(m_btnGateOpen, &QPushButton::clicked, this,
             [this]() { emit gateRequested(true); });
     connect(m_btnGateClose, &QPushButton::clicked, this,
             [this]() { emit gateRequested(false); });
+    connect(m_btnCloudCheck, &QPushButton::clicked, this,
+            [this]() { emit cloudCheckRequested(); });
 
     bb->addWidget(m_lblGate);
     bb->addStretch(1);
     bb->addWidget(m_lblEvents, 1);
+    bb->addWidget(m_btnCloudCheck);
     bb->addWidget(m_btnGateOpen);
     bb->addWidget(m_btnGateClose);
     root->addWidget(bottom);
@@ -263,13 +328,18 @@ void MainWindow::buildUi()
 
 void MainWindow::pushEvent(const QString &line)
 {
+    /* keep the ticker line bounded: cloud failure details can be long and the
+     * bottom bar must never grow past the 1024 px panel (panel is 300 px) */
+    QString text = line;
+    if (text.size() > 90)
+        text = text.left(87) + QStringLiteral("...");
     const QString stamp =
-        QDateTime::currentDateTime().toString("HH:mm:ss") + " " + line;
+        QDateTime::currentDateTime().toString("HH:mm:ss") + " " + text;
     m_events.append(stamp);
     if (m_events.size() > 64)
         m_events.remove(0, m_events.size() - 64);
     m_evtCursor = m_events.size() - 1;          /* newest first */
-    m_lblEvents->setText(m_events.last());
+    m_lblEvents->setText(elide(m_lblEvents, m_events.last(), 470));
     m_lblEvents->setToolTip(stamp);
 }
 
@@ -372,6 +442,63 @@ void MainWindow::onCloudPending(bool pending)
     applyCloudChip();
 }
 
+/* ------------------------- step 7: status chips ------------------------- */
+
+void MainWindow::setWifiChip(const QString &text, bool ok)
+{
+    if (m_lblWifi == nullptr)
+        return;
+    /* "WIFI:" + ssid can get long: keep it inside ~170 px */
+    m_lblWifi->setText(QStringLiteral("WIFI:") + elide(m_lblWifi, text, 150));
+    m_lblWifi->setStyleSheet(ok ? "QLabel{color:#69f0ae;font-size:14px;}"
+                                : "QLabel{color:#ff5252;font-size:14px;}");
+}
+
+void MainWindow::setCloudChip(const QString &text, bool ok)
+{
+    m_cloudHealth = text;
+    m_cloudHealthOk = ok;
+    applyCloudChip();
+}
+
+/* ------------------------ step 7: settings page ------------------------ */
+
+void MainWindow::setSettingsPage(QWidget *page)
+{
+    m_settingsPage = page;
+    if (m_settingsPage == nullptr)
+        return;
+    m_settingsPage->setParent(this);
+    m_settingsPage->setGeometry(rect());
+    m_settingsPage->hide();
+    connect(m_settingsPage, SIGNAL(closed()), this, SLOT(closeSettings()));
+}
+
+void MainWindow::openSettings()
+{
+    if (m_settingsPage == nullptr)
+        return;
+    m_settingsPage->setGeometry(rect());
+    m_settingsPage->show();
+    m_settingsPage->raise();
+    pushEvent(QStringLiteral("settings page opened"));
+}
+
+void MainWindow::closeSettings()
+{
+    if (m_settingsPage == nullptr)
+        return;
+    m_settingsPage->hide();
+    pushEvent(QStringLiteral("settings page closed"));
+}
+
+void MainWindow::resizeEvent(QResizeEvent *e)
+{
+    QMainWindow::resizeEvent(e);
+    if (m_settingsPage != nullptr && m_settingsPage->isVisible())
+        m_settingsPage->setGeometry(rect());
+}
+
 /* --------------------------- snapshot apply --------------------------- */
 
 static void setChip(QLabel *chip, const QString &name, bool ok,
@@ -401,6 +528,8 @@ void MainWindow::applySnapshot(const IpcSnapshot &s)
         setChip(m_lblCore1, "CORE1", core1, TXT_ONLINE, TXT_OFFLINE);
     }
     applyCloudChip();
+    /* step 7: settings page shows Core0's authoritative threshold read-only */
+    emit coreThresholdChanged(s.confThreshold, s.shmOnline);
 
     /* slots */
     m_lblSlots->setText(QString(TXT_FREE " %1 / " TXT_TOTAL " %2")
@@ -475,6 +604,15 @@ void MainWindow::applyCloudChip()
         m_lblCloud->setText(QString("CLOUD:") +
                             QString::fromUtf8(TXT_CLOUDBUSY));
         m_lblCloud->setStyleSheet("QLabel{color:#ffab40;font-size:14px;}");
+        return;
+    }
+    /* step 7: cloud-client health (idle / ok / no key / outage ...) */
+    if (!m_cloudHealth.isEmpty()) {
+        m_lblCloud->setText(QStringLiteral("CLOUD:") +
+                            elide(m_lblCloud, m_cloudHealth, 170));
+        m_lblCloud->setStyleSheet(m_cloudHealthOk
+                                      ? "QLabel{color:#69f0ae;font-size:14px;}"
+                                      : "QLabel{color:#ffab40;font-size:14px;}");
         return;
     }
     switch (m_cloudState) {
