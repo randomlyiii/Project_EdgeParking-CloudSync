@@ -71,10 +71,10 @@ vring 保留内存（`ls /proc/device-tree/reserved-memory/` 找 vdev0vring0/1+v
 
 - [x] ttyRPMSG0 出现，0x13→0x23、0x7E 心跳、CRC 0 错（python3 验收，两次全通）
 - [x] 0x11/0x12 → CAN 0x100 → C8T6 闸门 OPEN/CLOSE 真机闭环（OLED 行3 翻转；SG90 舵机本体未挂）
-- [ ] 手遮 BH1750 → 0x21 `ev=0x01 CAR_ARRIVE` 上行（**9B 语义帧**，无 lux/drop）、C8T6 OLED `CAN:Sended`（0x110 回执）——C8T6 在场补测；**需 C8T6 与 M4 同时烧到接口 v2**
-- [ ] 断链：remoteproc stop → A7 ≤1s LINK DOWN；start → 自动重连 + 0x13 → 0x23
-- [ ] C8T6 断电 ≤3s → 0x22 离线；恢复 → 0x22 在线
-- [ ] `rpmsg_cli bad` 坏 CRC 注入不崩；10 分钟 soak 零丢计数 → 勾 G3（需交叉编译 C 工具）
+- [x] 手遮 BH1750 → 0x21 `ev=0x01 CAR_ARRIVE` 上行（**9B 语义帧**，无 lux/drop）、C8T6 OLED `CAN:Sended`（0x110 回执）——C8T6 在场补测；**需 C8T6 与 M4 同时烧到接口 v2** （2026-09-12 v2 板验：C8T6+M4 同时重烧，用户确认）
+- [x] 断链：remoteproc stop → A7 ≤1s LINK DOWN；start → 自动重连 + 0x13 → 0x23 （沿用 2026-09-10 板验结论；v2 未改 rpmsg 链路层）
+- [ ] C8T6 断电 ≤3s → 0x22 离线；恢复 → 0x22 在线 未专项验：需拔 C8T6 电源/CAN 线，观察 `[m4] CAN node (C8T6) offline` 与恢复
+- [ ] `rpmsg_cli bad` 坏 CRC 注入不崩；10 分钟 soak 零丢计数 → 勾 G3（需交叉编译 C 工具） 未做：需先交叉编译 `rpmsg_cli`（make CROSS_COMPILE=... rpmsg_cli）
 
 ## 6. 同步纪律 / 备注
 
