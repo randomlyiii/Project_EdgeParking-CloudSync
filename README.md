@@ -9,7 +9,7 @@
 | 单元 | 系统 | 一句话职责 |
 |---|---|---|
 | M4 @209MHz | FreeRTOS | 纯硬件实时层：红外车辆到位检测、CAN 道闸、IO / 故障检测；仅经 RPMSG 与 A7 通信 |
-| A7-0 | Linux | 实时业务底座：RPMSG、上位机（Modbus-TCP）、停车场业务逻辑、（可选）SQLite、（可选）云平台上报 |
+| A7-0 | Linux | 实时业务底座：RPMSG、停车场业务逻辑、（可选）轻量记录、（可选）云平台上报 |
 | A7-1 | Linux | 多媒体 / 图形 / AI 协处理器管理：Qt5 LCD 界面、K210 模块（UART 预览流 + 车牌结果）、DeepSeek 兜底 |
 | K210 | CanMV MicroPython 固件 | 自带摄像头：JPEG 预览流**常开**（与推理解耦）+ 指令触发的 KPU 车牌识别（低置信云兜底） |
 
@@ -22,7 +22,7 @@
 - KPU 车牌识别模型（K210 片内推理，替代原 A7 本地 TFLite）
 - DeepSeek Vision API（兜底二次识别，HTTPS / libcurl）
 - FreeRTOS + OpenAMP RPMSG（M4↔A7）、UART（A7↔K210，预留 SPI 升级）
-- SQLite3（可选）、Modbus-TCP
+- 本地记录（轻量文本文件 `events.log`/`gate_log`，可选默认关；不上数据库）
 - 共享内存 + 消息队列 / eventfd（双 A7 通信）
 
 ## 硬件清单
@@ -33,7 +33,7 @@
 - 红外线传感器 ×N（车辆到位检测，M4 GPIO 采集）
 - CAN 道闸控制器（M4 CAN 外设控制）
 - （可选）车位占用传感器 ×N（IO 电平，M4 采集；缺省用进出计数状态机演示）
-- WiFi 模块（板载；上位机 / 云端**唯一网络链路**，不用以太网）
+- WiFi 模块（板载；云端**唯一网络链路**，不用以太网）
 - 电源、线材等外围
 
 ## 目录结构
@@ -57,8 +57,8 @@ park_demo/                      # 本仓库根
 │   ├── rpmsg/                  # /dev/ttyRPMSG0 帧收发、粘包处理、心跳（第3步已实现）
 │   ├── ipc_shm/                # 与 Core1 共享内存 park_shm v3 + 事件通知（ipc_shm.c/park_shm.h）
 │   ├── business/               # 停车场业务逻辑（app_config / business / whitelist / log）
-│   ├── storage/                # SQLite3 落盘（可选，默认关闭；store.c）
-│   ├── protocol/               # 预留（Modbus-TCP 已废弃，见 docs/protocols.md §4）
+│   ├── storage/                # 轻量文件记录（可选，默认关闭；store.c → events.log/gate_log）
+│   ├── protocol/               # 预留（原 Modbus-TCP 上位机接口已于 2026-09-11 取消）
 │   ├── tools/                  # core0_selftest / core1_stub / rpmsg_cli / load_m4.sh / hostcheck
 │   ├── core0_main.c            # 业务守护入口
 │   ├── sample_core0.conf       # 配置模板（真文件 core0.conf 不入库）
@@ -89,7 +89,7 @@ park_demo/                      # 本仓库根
 2. **K210 固件**（`k210_fw/`）：CanMV IDE 通过 USB 连接板子，上传 .py 模块到 flash（boot→main 上电自启）；固件本体出厂已带 CanMV MicroPython（仅升级固件才需 kflash）。上电即常开输出 JPEG 预览流（接线与帧协议见 `Task.md` 第五节 / `docs/protocols.md`）。
 3. **Linux 侧**：`core0_service`（Makefile）、`core1_ui`（CMake）用 ST SDK 交叉编译后部署。
 4. **上电自启**：`deploy/systemd/` 下的 unit 负责 M4 装载与各进程启动；各进程的核绑定（taskset / systemd CPUAffinity）细节见 `Task.md` 第二节。
-5. **接口规格**：帧格式、Modbus 寄存器映射、共享内存结构体、K210 串口帧统一维护在 `docs/protocols.md`，四端（M4 / core0 / core1 / K210）共用。
+5. **接口规格**：帧格式、共享内存结构体、K210 串口帧统一维护在 `docs/protocols.md`，四端（M4 / core0 / core1 / K210）共用。
 
 ## 文档分工（内容隔离）
 
