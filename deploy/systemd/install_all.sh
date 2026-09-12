@@ -52,7 +52,12 @@ LOADM4=$(pick ./tools/load_m4.sh /root/core0_service/tools/load_m4.sh \
 LINKTEST=$(pick ./tools/rpmsg_link_test.py \
                 /root/core0_service/tools/rpmsg_link_test.py \
                 "$DIR/../../core0_service/tools/rpmsg_link_test.py") || true
-M4ELF=$(pick "${M4_FW:-}" ./m4_fw.elf /root/m4_fw.elf /root/m4_fw_CM4.elf \
+# CubeIDE builds the M4 core as "m4_fw_CM4.elf" (inside m4_fw/CM4/Debug/).
+# The DEPLOYED name stays "m4_fw.elf" (load_m4.sh/remoteproc expect it, $FW_DST).
+M4ELF=$(pick "${M4_FW:-}" \
+             ./m4_fw_CM4.elf ./m4_fw.elf \
+             ./m4_fw/CM4/Debug/m4_fw_CM4.elf \
+             /root/m4_fw_CM4.elf /root/m4_fw.elf \
              /root/m4_fw/CM4/Debug/m4_fw_CM4.elf) || true
 
 echo "  core0_business : ${CORE0_BIN:-<not found>}"
@@ -60,7 +65,13 @@ echo "  core0.conf     : ${CONF:-<not found>}"
 echo "  park_ui        : ${UI_BIN:-<not found>}"
 echo "  load_m4.sh     : ${LOADM4:-<not found>}"
 echo "  link_test.py   : ${LINKTEST:-<not found>}"
-echo "  M4 elf         : ${M4ELF:-<not found, keep existing $FW_DST>}"
+if [ -n "$M4ELF" ]; then
+    echo "  M4 elf         : $M4ELF (will install as $FW_DST)"
+elif [ -f "$FW_DST" ]; then
+    echo "  M4 elf         : keep existing $FW_DST"
+else
+    echo "  M4 elf         : <not found> - scp m4_fw_CM4.elf to /root first"
+fi
 
 echo "[2/8] install core0 ($CORE0_DST)"
 mkdir -p "$CORE0_DST/tools"
