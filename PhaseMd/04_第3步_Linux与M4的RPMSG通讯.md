@@ -10,7 +10,8 @@
 | 帧头 0xAA 0x55 | type(1B) | seq(2B LE) | len(2B LE) | payload(len B) | CRC16(2B, 校验 type..payload) |
 ```
 - 下行（Core0→M4）：`0x11` 开闸 ｜ `0x12` 关闸 ｜ `0x13` 查询全量状态 ｜ `0x14` 配置下发（预留）
-- 上行（M4→Core0）：`0x21` CAN 事件转发（payload=CAN 帧 8B+本地 tick） ｜ `0x22` 从节点离线/恢复 ｜ `0x23` M4 状态/故障字 ｜ `0x7E` 双向心跳
+- 上行（M4→Core0）：`0x21` **节点语义事件**（9B：`code|arg(u16 LE)|status|node_id|tick(u32 LE)`，接口 v2） ｜ `0x22` 从节点离线/恢复 ｜ `0x23` M4 状态/故障字 ｜ `0x7E` 双向心跳
+- **接口 v2（2026-09-11）**：0x21 不再透传 CAN 原始帧，只带语义（无 lux/drop%）；事件码与 CAN 0x200 d[0] 同一张表（`docs/protocols.md` §1）。Core0 收到 `len=17` 会明确报"v1 透传帧, M4 未升级"。
 - 超长数据分块同 seq 连发；seq 连续性用于丢帧统计。
 
 ## 2. M4 侧任务
@@ -23,19 +24,20 @@
 
 ### P3-02 事件上行：CAN → RPMSG ⬜
 - 第2步的"待上报事件槽"置位后组帧发送：
-  - `0x21` payload = CAN 帧（id/dlc/8B data）+ 32bit 本地 tick；
+  - `0x21` payload（9B，接口 v2）= `code`(事件码) + `arg`(u16 LE) + `status`(状态位) + `node_id` + `tick`(M4 接收毫秒 u32 LE)；CAN 的大端字段在此换成小端；
   - 从节点离线/恢复（第2步 P2-10 判定）→ `0x22`。
 - 发送失败处理：rpmsg 缓冲满时重试 2 次后丢弃并计数（事件类可丢，状态类靠 `0x13` 全量重同步兜底）。
 - **验收**：配合 P3-05，Linux 侧 hex 能看到 0x21/0x22 帧。
 
 ### P3-03 指令下行：RPMSG → CAN 0x100 ⬜
 ```c
-/* 收 0x11/0x12/0x13 → 转成 CAN 帧 */
+/* 收 0x11/0x12/0x13 → 转成 CAN 帧(接口 v2: cmd|arg|seq|rsv) */
 FDCAN_TxHeaderTypeDef th = {0};
-uint8_t d[8] = {0};    /* d[0]: 0x01 开 / 0x02 关 / 0x10 查询 */
+uint8_t d[8] = {0};    /* d[0]: 0x01 开 / 0x02 关 / 0x03 状态查询 / 0x10 档位 */
 th.IdType = FDCAN_STANDARD_ID; th.Identifier = 0x100;
 th.TxFrameType = FDCAN_DATA_FRAME; th.DataLength = FDCAN_DLC_BYTES_8;
-HAL_FDCAN_AddTxMessage(&hfdcan1, &th, d, NULL);
+d[2] = cmd_seq++;                        /* 序号: 当前不回执, 保留给将来对账 */
+HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &th, d);   /* MP1 HAL 无 AddTxMessage */
 ```
 - 收 `0x13` 查询：回 `0x23` 全量状态（闸状态、从节点在线、错误计数）。
 - **验收**：Linux 发 0x11 → C8T6 SG90 动作（与 G2 场景打通成端到端）。
@@ -82,7 +84,7 @@ ls /dev/ttyRPMSG0     # 通道就绪标志
 
 ### P3-10 业务数据流对接 🟨
 - `rpmsg_link.h`：上行经 `on_frame` 回调投递（业务只消费回调/快照，不碰 fd）；下行 `rpmsg_link_send_gate_open/close`（0x11/0x12）、`rpmsg_link_send_query`（0x13）；回调在 RX 线程锁外派发，回调内可再调 send。
-- demo 中 0x21 已按 §1 CAN 语义解码打印（0x200 ev/lux/drop）。
+- demo 中 0x21 已按 §1 语义解码打印（`node/ev/arg/status/tick`；事件码表见 protocols.md §1）。
 - **验收**：事件从 CAN 到业务队列全链路日志可查（与第4步联测）。
 
 ### P3-11 打桩工具 `core0_service/tools/rpmsg_cli` 🟨

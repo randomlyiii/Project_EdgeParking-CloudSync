@@ -36,7 +36,7 @@ static void on_sigint(int sig)
 static const char *type_name(uint8_t t)
 {
     switch (t) {
-    case RPMSG_RX_CAN_EVENT:  return "0x21 CAN事件转发";
+    case RPMSG_RX_NODE_EVENT: return "0x21 节点语义事件";
     case RPMSG_RX_NODE_STATE: return "0x22 从节点离线/恢复";
     case RPMSG_RX_M4_STATE:   return "0x23 M4全量状态";
     case RPMSG_RX_HEARTBEAT:  return "0x7E 心跳";
@@ -54,7 +54,7 @@ static void print_hex(const uint8_t *p, size_t n)
 /* 上行帧解码打印（业务侧消费时可参考此处的字段解析） */
 static void on_frame(const rpmsg_frame_t *f, void *opaque)
 {
-    rpmsg_can_event_t ev;
+    rpmsg_node_event_t ev;
     rpmsg_m4_state_t  st;
     int nst;
 
@@ -65,19 +65,14 @@ static void on_frame(const rpmsg_frame_t *f, void *opaque)
     printf("\n");
 
     switch (f->type) {
-    case RPMSG_RX_CAN_EVENT:
-        if (rpmsg_decode_can_event(f, &ev) == 0) {
-            printf("     └ CAN id=0x%03X dlc=%u data=", (unsigned)ev.can_id,
-                   (unsigned)ev.dlc);
-            print_hex(ev.data, ev.dlc);
-            printf(" tick=%u ms\n", (unsigned)ev.tick);
-            /* CAN 语义（0x200/0x210）按 docs/protocols.md §1 由业务层解释：
-             * 0x200 d[0]=event(0x01 遮光到位) d[1..2]=lux(大端) d[3]=drop% d[4]=状态位 */
-            if (ev.can_id == 0x200u && ev.dlc >= 5u) {
-                uint16_t lux = (uint16_t)((ev.data[1] << 8) | ev.data[2]);
-                printf("     └ 0x200: ev=0x%02X lux=%u drop=%u%%\n",
-                       (unsigned)ev.data[0], (unsigned)lux, (unsigned)ev.data[3]);
-            }
+    case RPMSG_RX_NODE_EVENT:
+        if (rpmsg_decode_node_event(f, &ev) == 0) {
+            /* 语义事件（事件码表见 docs/protocols.md §1）：
+             * 0x01 车到位 / 0x02 车离开 / 0x03 节点故障(arg=类别)
+             * 0x04 闸位(arg=0 关/1 开) / 0x05 上电就绪 */
+            printf("     └ node=%u ev=0x%02X arg=%u status=0x%02X tick=%u ms\n",
+                   (unsigned)ev.node_id, (unsigned)ev.code, (unsigned)ev.arg,
+                   (unsigned)ev.status, (unsigned)ev.tick);
         }
         break;
     case RPMSG_RX_M4_STATE:

@@ -66,8 +66,8 @@ size_t rpmsg_rx_feed(rpmsg_rx_t *rx, const uint8_t *data, size_t n,
 int rpmsg_rx_parse_one(const uint8_t *frame, size_t n, rpmsg_frame_t *out);
 
 /* ---------- 上行 payload 解码（字节序/布局见 docs/protocols.md §3） ---------- */
-/* 0x21 → CAN 事件（成功返回 0） */
-int rpmsg_decode_can_event(const rpmsg_frame_t *f, rpmsg_can_event_t *ev);
+/* 0x21 → 节点语义事件（成功返回 0） */
+int rpmsg_decode_node_event(const rpmsg_frame_t *f, rpmsg_node_event_t *ev);
 /* 0x23 → M4 全量状态（成功返回 0） */
 int rpmsg_decode_m4_state(const rpmsg_frame_t *f, rpmsg_m4_state_t *st);
 /* 0x22 → 节点离线/恢复：返回 0=离线 1=恢复；非 0x22/长度错返回 -1 */

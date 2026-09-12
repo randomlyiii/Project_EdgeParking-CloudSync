@@ -13,7 +13,8 @@
   *
   *          对齐协议 docs/protocols.md §3(= core0_service/rpmsg):
   *          - 0x11/0x12 → CAN_Master_RequestCmd(0x01/0x02), 0x13 → 0x23, 0x7E 保鲜;
-  *          - 0x21 = id u32 LE + dlc + data[8] 原样 + tick u32 LE(osKernelGetTickCount);
+  *          - 0x21 = 节点语义事件 9B: code(1B)+arg(2B LE)+status(1B)+node_id(1B)+tick(4B LE)
+  *            (接口 v2; v1 的 17B CAN 原始透传已废弃, 总线上不再有 lux/drop%);
   *          - 0x23 = gate(slave_status&bit0) + online + can_err_cnt u16 LE(饱和,
   *            = bus_off_cnt + mon.tx_err_count);
   *          - seq 按 type 独立计数(u16 自然回绕); 发送失败重试 2 次后丢弃计数。
@@ -132,16 +133,22 @@ static void bridge_send_m4_state(void)
   (void)bridge_send(RPMSG_RX_M4_STATE, p, RPMSG_M4_STATE_LEN);
 }
 
-/* 0x21 CAN 事件转发: 17B, data 原样搬运(lux 大端不转换) */
-static void bridge_send_can_event(const rpmsg_can_evt_msg_t *m)
+/* 0x21 节点语义事件转发: 9B = code | arg(u16 LE) | status | node_id | tick(u32 LE)
+   ⭐ 接口 v2: CAN 帧里的 lux/drop% 到此为止 —— 只把"语义"往上送，
+   板级(A7)对下位机用什么传感器零假设(换传感器只改下位机固件)。 */
+static void bridge_send_node_event(const rpmsg_can_evt_msg_t *m)
 {
-  uint8_t p[RPMSG_CAN_EVT_LEN];
+  uint8_t p[RPMSG_NODE_EVT_LEN];
 
-  wr_u32_le(p, m->id);
-  p[4] = m->dlc;
-  memcpy(p + 5, m->data, 8);
-  wr_u32_le(p + 13, m->tick);
-  (void)bridge_send(RPMSG_RX_CAN_EVENT, p, RPMSG_CAN_EVT_LEN);
+  p[0] = m->data[0];                                          /* 事件码(EVT_*) */
+  wr_u16_le(p + 1, (uint16_t)(((uint16_t)m->data[1] << 8) |   /* CAN 大端 -> RPMSG 小端 */
+                              (uint16_t)m->data[2]));
+  p[3] = m->data[3];                                          /* 状态位快照 */
+  /* 节点号由节点自己在 0x210 里报(收到心跳前用主节点默认值) */
+  p[4] = (g_can_master_mon.node_id != 0u) ? g_can_master_mon.node_id
+                                         : RPMSG_NODE_ID_MAIN;
+  wr_u32_le(p + 5, m->tick);                                  /* M4 接收时刻 ms */
+  (void)bridge_send(RPMSG_RX_NODE_EVENT, p, RPMSG_NODE_EVT_LEN);
 }
 
 /* ============================ VIRT_UART RX 回调 ============================ */
@@ -169,11 +176,11 @@ static int frame_cb(const rpmsg_frame_t *f, void *opaque)
   {
     case RPMSG_TX_GATE_OPEN:                                  /* 0x11 → CAN 0x100/0x01 */
       g_rpmsg_bridge_mon.cmd_rx++;
-      CAN_Master_RequestCmd(CAN_CMD_OPEN_GATE);
+      CAN_Master_RequestCmd(CAN_CMD_GATE_OPEN, 0u);
       break;
     case RPMSG_TX_GATE_CLOSE:                                 /* 0x12 → CAN 0x100/0x02 */
       g_rpmsg_bridge_mon.cmd_rx++;
-      CAN_Master_RequestCmd(CAN_CMD_CLOSE_GATE);
+      CAN_Master_RequestCmd(CAN_CMD_GATE_CLOSE, 0u);
       break;
     case RPMSG_TX_QUERY_STATE:                                /* 0x13 → 回 0x23(循环里发) */
       g_rpmsg_bridge_mon.cmd_rx++;
@@ -342,7 +349,7 @@ void Rpmsg_Task(void *argument)
         if (m.id != CAN_MASTER_EVT_ID)                        /* 默认只转发 0x200 事件 */
           continue;
 #endif
-        bridge_send_can_event(&m);
+        bridge_send_node_event(&m);
         g_rpmsg_bridge_mon.evt_fwd++;
       }
     }

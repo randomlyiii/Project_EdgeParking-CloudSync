@@ -274,22 +274,21 @@ static uint32_t rd_u32_le(const uint8_t *p)
          | ((uint32_t)p[3] << 24);
 }
 
-int rpmsg_decode_can_event(const rpmsg_frame_t *f, rpmsg_can_event_t *ev)
+int rpmsg_decode_node_event(const rpmsg_frame_t *f, rpmsg_node_event_t *ev)
 {
     const uint8_t *p;
 
     if (f == NULL || ev == NULL)
         return -1;
-    if (f->type != RPMSG_RX_CAN_EVENT || f->len < RPMSG_CAN_EVT_LEN)
+    if (f->type != RPMSG_RX_NODE_EVENT || f->len < RPMSG_NODE_EVT_LEN)
         return -1;
 
     p = f->payload;
-    ev->can_id = rd_u32_le(p);
-    ev->dlc = p[4];
-    if (ev->dlc > 8u)
-        return -1;
-    memcpy(ev->data, p + 5, 8);
-    ev->tick = rd_u32_le(p + 13);
+    ev->code    = p[0];
+    ev->arg     = rd_u16_le(p + 1);
+    ev->status  = p[3];
+    ev->node_id = p[4];
+    ev->tick    = rd_u32_le(p + 5);
     return 0;
 }
 

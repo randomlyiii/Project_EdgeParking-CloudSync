@@ -9,20 +9,55 @@
   *          - 读数失败 -> Shade_ReportFault(1)，本周期不进状态机(不污染基线)；
   *            恢复读数后自动回正常(故障标志每周期由任务刷新)。
   *
-  *          调参(掉点阈值/去抖次数)在 config.h，本文件不改数值。
+  *          调参(档位阈值表/去抖次数)在 config.h，本文件不改数值。
+  *          产出的 lux/drop% 只给本节点 OLED，不上 CAN(接口 v2 语义事件)。
   ******************************************************************************
   */
 /* USER CODE END Header */
 #include "shade.h"
 #include "config.h"
 
-/* 状态机私有状态(仅 BH1750_Task 单写者，无需互斥；其余任务只读) */
+/* 状态机私有状态(仅 BH1750_Task 单写者，无需互斥；其余任务只读)
+   s_level 例外: 由 CAN_Rx_Task 经 Shade_SetDetectLevel() 写, 8 位读写天然原子。 */
 static ShadeState_t s_state    = SHADE_CLEAR;
 static float        s_baseline = -1.0f;   /* -1=未初始化，首采样直接赋值 */
 static uint8_t      s_confirm  = 0u;
 static uint16_t     s_lux_last = 0u;      /* 最近一次有效 lux */
 static uint8_t      s_drop     = 0u;      /* 当前 drop%(0~100) */
 static uint8_t      s_fault    = 0u;      /* 最近一次采样是否故障 */
+static uint8_t      s_level    = SHADE_LEVEL_DEFAULT;   /* 灵敏度档位 1..5 */
+
+/* 档位 1..5 -> 掉点阈值 %(表在 config.h，换传感器只改那张表) */
+static const uint8_t s_level_drop[] = SHADE_LEVEL_DROP_TABLE;
+#define SHADE_LEVEL_TABLE_LEN  (sizeof(s_level_drop) / sizeof(s_level_drop[0]))
+
+uint8_t Shade_GetDetectLevel(void)
+{
+  return s_level;
+}
+
+uint8_t Shade_GetDropThreshold(void)
+{
+  uint8_t idx = (uint8_t)((s_level >= SHADE_LEVEL_MIN) ? (s_level - SHADE_LEVEL_MIN) : 0u);
+  if (idx >= (uint8_t)SHADE_LEVEL_TABLE_LEN)
+  {
+    idx = (uint8_t)(SHADE_LEVEL_TABLE_LEN - 1u);
+  }
+  return s_level_drop[idx];
+}
+
+uint8_t Shade_SetDetectLevel(uint8_t level)
+{
+  if ((level < SHADE_LEVEL_MIN) || (level > SHADE_LEVEL_MAX) ||
+      (level > SHADE_LEVEL_TABLE_LEN))
+  {
+    return 1u;   /* 越界: 保持原档位 */
+  }
+  s_level = level;   /* 单字节写, 与 BH1750_Task 的读天然原子;
+                        故意**不动** s_confirm(它是 BH1750_Task 单写者, 跨任务改写会丢更新);
+                        代价只是换档后可能提前一拍翻转, 无功能影响 */
+  return 0u;
+}
 
 int8_t Shade_FSM_Update(uint16_t lux)
 {
@@ -59,9 +94,11 @@ int8_t Shade_FSM_Update(uint16_t lux)
   }
   s_drop = (uint8_t)((drop > 100) ? 100 : ((drop < 0) ? 0 : drop));
 
-  /* 去抖判定：进入用 DROP 阈值，释放用 RELEASE 阈值(回滞) */
+  /* 去抖判定：进入用当前档位阈值，释放用 阈值/回滞系数(避免临界抖动) */
   {
-    uint32_t th  = (s_state == SHADE_CLEAR) ? SHADE_DROP_PERCENT : SHADE_RELEASE_PERCENT;
+    uint32_t drop_th = (uint32_t)Shade_GetDropThreshold();
+    uint32_t rel_th  = drop_th / (uint32_t)SHADE_RELEASE_DIV;
+    uint32_t th      = (s_state == SHADE_CLEAR) ? drop_th : rel_th;
     uint8_t  hit = (s_state == SHADE_CLEAR)
                      ? ((uint32_t)s_drop >= th)
                      : ((uint32_t)s_drop <  th);

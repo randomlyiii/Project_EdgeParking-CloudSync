@@ -42,9 +42,10 @@ libmetal\lib, virtual_driver\virt_uart.c, mw_if\...}`，参考 100ASK 例程
 
 - **线程**：`Rpmsg_Task`（512 words, Normal，freertos.c RTOS_THREADS 区创建）为唯一 OpenAMP 用户：
   2ms 轮询 `OPENAMP_check_for_message()`；VIRT_UART RX 回调**只 memcpy+置标志**（禁 FreeRTOS API）。
-- 下行：0x11/0x12 → `CAN_Master_RequestCmd(0x01/0x02)`；0x13 → 回 0x23；0x7E 保鲜；未知丢弃计数。
-- 上行：CAN 事件经 can_master 新钩子 `CAN_Master_SetEventHook` 入队（深16，满丢）→ 0x21（17B，
-  id u32 LE + dlc + data[8] 原样 + tick u32 LE）；C8T6 在线边沿 → 0x22；1s 维护查
+- 下行：0x11/0x12 → `CAN_Master_RequestCmd(0x01/0x02, arg=0)`；0x13 → 回 0x23；0x7E 保鲜；未知丢弃计数。
+- 上行：CAN 0x200 事件经 can_master 钩子 `CAN_Master_SetEventHook` 入队（深16，满丢）→ 0x21
+  **语义事件 9B**（`code | arg u16 LE | status | node_id | tick u32 LE`，接口 v2：CAN 的大端在此转小端，
+  **不再透传原始帧、无 lux/drop%**）；C8T6 在线边沿 → 0x22；1s 维护查
   `HAL_FDCAN_GetProtocolStatus` Bus_Off → Stop/Start 恢复 + `bus_off_cnt` 并入 0x23 的 can_err。
 - 发送 per-type seq、失败重试 2 次后丢弃计数；0x7E 双向 500ms；A7 侧 1s 无帧判 LINK_DOWN 由其自理。
 - 监视：`g_rpmsg_bridge_mon`（vuart_ready/a7_alive/tx/rx/evt/hb/…，调试器 live watch）。
@@ -70,7 +71,7 @@ vring 保留内存（`ls /proc/device-tree/reserved-memory/` 找 vdev0vring0/1+v
 
 - [x] ttyRPMSG0 出现，0x13→0x23、0x7E 心跳、CRC 0 错（python3 验收，两次全通）
 - [x] 0x11/0x12 → CAN 0x100 → C8T6 闸门 OPEN/CLOSE 真机闭环（OLED 行3 翻转；SG90 舵机本体未挂）
-- [ ] 手遮 BH1750 → 0x21 ev/lux/drop 上行、C8T6 OLED `CAN:Sended`（0x110 不回归）——C8T6 在场补测
+- [ ] 手遮 BH1750 → 0x21 `ev=0x01 CAR_ARRIVE` 上行（**9B 语义帧**，无 lux/drop）、C8T6 OLED `CAN:Sended`（0x110 回执）——C8T6 在场补测；**需 C8T6 与 M4 同时烧到接口 v2**
 - [ ] 断链：remoteproc stop → A7 ≤1s LINK DOWN；start → 自动重连 + 0x13 → 0x23
 - [ ] C8T6 断电 ≤3s → 0x22 离线；恢复 → 0x22 在线
 - [ ] `rpmsg_cli bad` 坏 CRC 注入不崩；10 分钟 soak 零丢计数 → 勾 G3（需交叉编译 C 工具）

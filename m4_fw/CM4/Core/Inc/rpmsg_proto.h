@@ -4,6 +4,7 @@
  * 对应 PhaseMd/04 P3-07；帧格式权威定义 docs/protocols.md §0/§3。
  * 职责：CRC16(XMODEM) / 组帧 / 增量拆帧状态机（粘包、坏帧重同步、丢帧统计）。
  * 本层不碰 fd、不感知链路状态，可单独用 rpmsg_cli/单测验证。
+ * ⚠️ M4 侧勿把 rpmsg_rx_t 放任务栈（内含 2048B 累积缓冲）。
  *
  * ⭐ 本文件 = core0_service/rpmsg/rpmsg_proto.h 的完整拷贝副本（M4 侧
  *    rpmsg_decode_* 为死代码但保留，保证两端逐字节可 diff；单一事实源在
@@ -46,7 +47,7 @@ typedef struct {
 /* ---------- 增量拆帧（RX） ---------- */
 typedef struct rpmsg_rx rpmsg_rx_t;
 
-/* 解析器上下文：可在栈上声明后调用 rpmsg_rx_init；M4 侧勿放任务栈（buf 2048B） */
+/* 解析器上下文：可在栈上声明后调用 rpmsg_rx_init */
 struct rpmsg_rx {
     uint8_t      buf[2048];           /* 累积缓冲（≥2×RPMSG_FRAME_MAX） */
     size_t       len;                 /* 有效字节数 */
@@ -70,8 +71,8 @@ size_t rpmsg_rx_feed(rpmsg_rx_t *rx, const uint8_t *data, size_t n,
 int rpmsg_rx_parse_one(const uint8_t *frame, size_t n, rpmsg_frame_t *out);
 
 /* ---------- 上行 payload 解码（字节序/布局见 docs/protocols.md §3） ---------- */
-/* 0x21 → CAN 事件（成功返回 0） */
-int rpmsg_decode_can_event(const rpmsg_frame_t *f, rpmsg_can_event_t *ev);
+/* 0x21 → 节点语义事件（成功返回 0） */
+int rpmsg_decode_node_event(const rpmsg_frame_t *f, rpmsg_node_event_t *ev);
 /* 0x23 → M4 全量状态（成功返回 0） */
 int rpmsg_decode_m4_state(const rpmsg_frame_t *f, rpmsg_m4_state_t *st);
 /* 0x22 → 节点离线/恢复：返回 0=离线 1=恢复；非 0x22/长度错返回 -1 */

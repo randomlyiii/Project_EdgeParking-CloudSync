@@ -25,7 +25,7 @@
                                 GATE_OPEN（RPMSG 0x11 → M4 → CAN 0x100 → SG90）
 ```
 
-- **触发唯一性**：只有 CAN 遮光事件进 CAR_WAIT；手动（LCD/按键）开闸走**独立降级通道**，不过识别流程。
+- **触发唯一性**：只有 C8T6 车到位事件进 CAR_WAIT；手动（LCD/按键）开闸走**独立降级通道**，不过识别流程。
 - **数据单向**：硬件状态/事件向上汇总，业务指令向下下发。
 
 ## 2. 任务清单
@@ -93,4 +93,4 @@
 - **共享内存契约**：Core0 写 / Core1 读 `park_shm`（v3，76B）；Core1 **必须 `O_RDWR` + `PROT_READ|PROT_WRITE`**（否则心跳/结果/远程请求写不进 → Core0 判其失联）。跨进程事件走 shm 事件字（`evt_bits_c0/c1` + `evt_seq_c0/c1`），**匿名 eventfd 无法跨进程共享**，不要改回去；读侧 200ms 轮询满足 ≤500ms KPI。契约见 `docs/protocols.md` §4。
 - 3s 识别超时（Core0 视角）与第7步 DeepSeek 5s 超时的衔接已定稿：默认 3s；`cloud_pending` 置位时延长至 6s 硬上限（云限 5s），到点必降级（见 P7-04，K2 实测）。
 - 开闸指令幂等：同一车牌结果重复到达不重复发闸（COOL_DOWN 兜底）。
-- RPMSG `0x21` 事件帧里带 lux/drop% 原始值，业务日志全量留痕，便于现场调遮光敏感度。
+- RPMSG `0x21` 是**语义事件**（接口 v2，9B：`code/arg/status/node_id/tick`）——**不带 lux/drop%**。业务只按事件码驱动（`EVT_CAR_ARRIVE` → 登记识别、`EVT_GATE_STATE` → 闸位跟随）；敏感度调整走 `0x100/0x10` 语义档位，由下位机自己翻译成阈值（隔离原则见 `docs/protocols.md` §1.0）。

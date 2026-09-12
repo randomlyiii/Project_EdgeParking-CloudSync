@@ -17,21 +17,35 @@
 extern "C" {
 #endif
 
-/* =========================== 遮光检测(百分比掉点状态机, shade.c) ========== */
-/* BH1750 采样周期以 bh1750.h 的 BH1750_READ_PERIOD_MS(=200ms) 为准，
+/* =========================== 检测灵敏度档位(语义参数, CAN 0x100/0x10) ===== */
+/* 板级(A7/M4)只下发"档位"这个语义参数(1..5)，具体掉点阈值由本节点自己定 ——
+   这就是"板子层与下位机隔离"：以后把 BH1750 换成红外/超声波/地磁，
+   只改本文件这张表，Linux 侧一行代码都不用动。
+   档位越高越灵敏(越容易判为"车到位")；释放阈值 = 掉点阈值 / SHADE_RELEASE_DIV(回滞)。
+   BH1750 采样周期以 bh1750.h 的 BH1750_READ_PERIOD_MS(=200ms) 为准，
    状态机每周期喂一次有效 lux；去抖 = 连续 SHADE_CONFIRM_N 次满足才翻转。 */
-#define SHADE_DROP_PERCENT     60u   /* lux 相对基线掉 >=60% 判"遮光/车到位" */
-#define SHADE_RELEASE_PERCENT  20u   /* 掉点 <20% 判"恢复"(回滞, 防临界抖动) */
-#define SHADE_CONFIRM_N         3u   /* 连续 N 次(≈3x200ms)才翻转状态 */
+#define SHADE_LEVEL_MIN          1u
+#define SHADE_LEVEL_MAX          5u
+#define SHADE_LEVEL_DEFAULT      3u
+#define SHADE_LEVEL_DROP_TABLE   { 80u, 70u, 60u, 50u, 40u }  /* 档位 1..5 的掉点阈值 % */
+#define SHADE_RELEASE_DIV        3u   /* 释放阈值 = 掉点阈值 / 3 (档位3 => 20%) */
+#define SHADE_CONFIRM_N          3u   /* 连续 N 次(≈3x200ms)才翻转状态 */
 
-/* =========================== CAN 2.0(经典 CAN / 500k / 标准帧) ========== */
+/* =========================== CAN 2.0(经典 CAN / 500k / 标准帧) ==========
+   接口 v2(2026-09-11): 语义事件接口 —— 总线上只传
+   "事件码 + 语义参数 + 状态位 + 本节点 tick"，不传 lux/drop 百分比这类
+   传感器数值；传感器怎么实现是下位机自己的事(见 docs/protocols.md §1)。 */
 #define CAN_CMD_ID          0x100u   /* 主(M4)→从(C8T6) 指令帧 ID(0x1xx 段) */
-#define CAN_ACK_ID          0x110u   /* 主(M4)→从 事件确认帧 ID: 收到 0x200 后回执,
-                                        d[0]=回显事件码(0x01 遮光/0x00 恢复) */
-#define CAN_EVT_ID          0x200u   /* 从→主 事件帧 ID */
-#define CAN_HB_ID           0x210u   /* 从→主 心跳帧 ID(1Hz) */
+#define CAN_ACK_ID          0x110u   /* 主(M4)→从 回执帧 ID(kind/code/arg) */
+#define CAN_EVT_ID          0x200u   /* 从→主 事件帧 ID(语义事件) */
+#define CAN_HB_ID           0x210u   /* 从→主 心跳帧 ID(1Hz; 查询应答同帧) */
 #define CAN_POLL_PERIOD_MS     10u   /* CAN_Rx_Task 轮询周期 ms(收+心跳节拍) */
 #define CAN_HB_PERIOD_MS     1000u   /* 心跳发送周期 ms */
+
+/* 节点身份(0x210 d[5]/d[6]/d[7]): 主端据此识别"这一帧是谁发的"与固件版本 */
+#define CAN_NODE_ID           0x01u  /* 节点号: 0x01 = C8T6 光感+舵机节点 */
+#define CAN_DEV_TYPE          0x01u  /* 设备类型: 0x01 = 存在检测(光感) + SG90 道闸 */
+#define CAN_FW_VER            0x20u  /* 固件版本: 高4位主版本/低4位次版本 => v2.0 */
 
 /* =========================== SG90 道闸(设计功能已启用) ==================== */
 /* TIM2_CH1/PA0, 72MHz, PSC=71/ARR=19999 -> 50Hz; CCR 值 = 脉宽 µs(@1MHz 计数)。
@@ -48,8 +62,8 @@ extern "C" {
 #define OLED_LINE_CAN          4u
 #define OLED_TITLE_STR        "PARK NODE"   /* 行1 正式标题(PhaseMd/02 P1-07 设计稿) */
 #define OLED_REFRESH_MS      200u    /* OLED_Task 上屏周期 ms */
-#define OLED_EVT_FLASH_MS   1000u    /* 遮光事件后 Line4 闪 "CAN:EVT" 时长 ms */
-#define OLED_ACK_FLASH_MS   1000u    /* 收 0x110 确认后 Line4 显示 "CAN:Sended" 时长 ms */
+#define OLED_EVT_FLASH_MS   1000u    /* 发事件后 Line4 闪 "CAN:EVT" 时长 ms */
+#define OLED_ACK_FLASH_MS   1000u    /* 收 0x110 回执后 Line4 显示 "CAN:Sended" 时长 ms */
 
 #ifdef __cplusplus
 }

@@ -14,8 +14,8 @@
  *    (now_ms arguments) and hardware access is injected via
  *    biz_platform_t. This makes the state machine host-testable
  *    (tools/core0_selftest.c).
- *  - Trigger uniqueness: only the CAN shade event (0x21 with
- *    d[0]=0x01) enters the recognition flow; remote/UI gate requests
+ *  - Trigger uniqueness: only the node "car arrive" event (RPMSG 0x21 with
+ *    EVT_CAR_ARRIVE) enters the recognition flow; remote/UI gate requests
  *    take the independent downgrade channel and never touch the state
  *    machine (spec 5.1.1.4).
  *  - Gate command idempotency: repeated commands for the same target
@@ -49,8 +49,9 @@ typedef enum {
 const char *biz_state_name(biz_state_t s);
 
 typedef enum {
-    BIZ_EV_SHADE_ARRIVE = 0,   /* 0x21 CAN d[0]=0x01 (car covers sensor)   */
-    BIZ_EV_SHADE_CLEAR,        /* 0x21 CAN d[0]=0x00 (shade recovered)     */
+    BIZ_EV_CAR_ARRIVE = 0,     /* 0x21 EVT_CAR_ARRIVE (vehicle detected)    */
+    BIZ_EV_CAR_LEAVE,          /* 0x21 EVT_CAR_LEAVE (detection cleared)    */
+    BIZ_EV_GATE_STATE,         /* 0x21 EVT_GATE_STATE: b0 = 0 closed / 1 open */
     BIZ_EV_NODE_STATE,         /* 0x22: b0 = 0 offline / 1 online          */
     BIZ_EV_M4_STATE,           /* 0x23: b0 gate b1 node_online u16 can_err */
     BIZ_EV_LINK,               /* rpmsg link: b0 = 0 down / 1 up           */

@@ -229,6 +229,7 @@ void BH1750Task(void *argument)
   uint16_t lux = BH1750_ERR_VALUE;
   uint8_t  fail_streak = 0;
   uint8_t  read_ok;
+  uint8_t  fault_reported = 0u;   /* 传感器故障"发生"事件是否已上报(边沿用) */
   osStatus_t res;
 
   /* 初始化(阻塞约 200ms)：总线在 main 裸机段 splash 时已由 SSD1306_Init
@@ -265,26 +266,34 @@ void BH1750Task(void *argument)
     }
     osMutexRelease(OledMutexHandle);
 
-    /* 遮光状态机 + CAN 上报(不需 I2C 总线，锁已释放):
-       - 读失败: 只上报故障标志(状态位 bit2), 不喂状态机(防污染基线);
-       - 读成功: 每周期喂 lux, 状态翻转边沿发 0x200 事件(1=遮光/车到位, -1=恢复)。 */
+    /* 存在检测状态机 + CAN 上报(不需 I2C 总线，锁已释放):
+       - 读失败: 上报故障标志(状态位 bit2) + 首次转故障时发一次 0x200/0x03;
+                 不喂状态机(防污染基线);
+       - 读成功: 每周期喂 lux, 状态翻转边沿发语义事件
+                 (0x01 车到位 / 0x02 车离开); 传感器数值不上总线(接口 v2)。 */
     if (read_ok)
     {
       int8_t edge;
       Shade_ReportFault(0u);
+      fault_reported = 0u;   /* 恢复: 只清"已上报"标志, 当前状态以状态位为准 */
       edge = Shade_FSM_Update(lux);
       if (edge == 1)
       {
-        (void)CAN_Node_SendEvent(CAN_EVT_SHADED, lux, Shade_GetDrop());
+        (void)CAN_Node_SendEvent(CAN_EVT_CAR_ARRIVE, 0u);
       }
       else if (edge == -1)
       {
-        (void)CAN_Node_SendEvent(CAN_EVT_RECOVER, lux, Shade_GetDrop());
+        (void)CAN_Node_SendEvent(CAN_EVT_CAR_LEAVE, 0u);
       }
     }
     else
     {
       Shade_ReportFault(1u);
+      if (fault_reported == 0u)
+      {
+        fault_reported = 1u;   /* 只在"发生"边沿上报一次, 免每 200ms 刷总线 */
+        (void)CAN_Node_SendEvent(CAN_EVT_NODE_FAULT, (uint16_t)CAN_FAULT_SENSOR);
+      }
     }
 
     /* 队列只留最新值：满了就先丢掉最旧的一条再放 */
@@ -344,11 +353,11 @@ void OLEDTask(void *argument)
       }
       else if ((ack_tick != 0u) && ((uint32_t)(now - ack_tick) < OLED_ACK_FLASH_MS))
       {
-        can_st = "CAN:Sended";        /* ★ 特殊标识: 板子(M4)已回 0x110 确认收到光敏事件 */
+        can_st = "CAN:Sended";        /* ★ 特殊标识: 板子(M4)已回 0x110 回执 */
       }
       else if ((ev_tick != 0u) && ((uint32_t)(now - ev_tick) < OLED_EVT_FLASH_MS))
       {
-        can_st = "CAN:EVT ";        /* 光敏事件已发出, 等待/未确认窗口 */
+        can_st = "CAN:EVT ";        /* 节点事件已发出, 等待/未确认窗口 */
       }
       else
       {

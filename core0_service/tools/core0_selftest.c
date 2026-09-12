@@ -4,8 +4,8 @@
  *
  * Drives business/ with a virtual clock and a fake platform (gate
  * commands and notify events recorded), covering:
- *   S1  happy path: shade -> whitelisted result -> open -> cooldown ->
- *       passage count on shade clear (entry mode)
+ *   S1  happy path: car arrive -> whitelisted result -> open -> cooldown ->
+ *       passage count on car leave (entry mode)
  *   S2  recognition timeout -> deny, late result dropped
  *   S3  cloud_pending extends 3s -> 6s hard cap
  *   S4  core1 dead at registration -> immediate downgrade, no trigger
@@ -15,9 +15,10 @@
  *   S8  passage counted exactly once (no duplicate counting)
  *   S9  slots clamp at total (entry mode), exit mode counts -1
  *   S10 config parse + invalid value rejection + whitelist section
- *   S11 duplicate shade arrival ignored while busy
+ *   S11 duplicate car-arrive ignored while busy
  *   S12 link down -> fault bit0, link_flags update
  *   S13 log level filter + file target, storage-off is a no-op (P4-07/P4-08)
+ *   S14 node gate-state event (0x21/0x04) + pre-command report guard
  *
  * Build (any Linux/MinGW gcc):
  *   gcc -std=gnu11 -Ibusiness -Istorage -o core0_selftest \
@@ -144,6 +145,15 @@ static void post_m4(biz_t *b, int gate, int node, int err, int64_t now)
     biz_post(b, &ev, now);
 }
 
+static void post_gate_state(biz_t *b, int gate, int64_t now)
+{
+    biz_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = BIZ_EV_GATE_STATE;
+    ev.b0 = (uint8_t)gate;
+    biz_post(b, &ev, now);
+}
+
 static void periodic(biz_t *b, fake_t *f, int64_t now, uint32_t hb,
                      int cloud)
 {
@@ -186,7 +196,7 @@ static void s1_happy_path(void)
     periodic_alive(b, &fk, 100000, 0);            /* core1 alive (hb nonzero) */
     CHECK(fk.pub.link_flags & 0x04);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 100000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 100000);
     CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
     CHECK(fk.notify_01 == 1);
     CHECK(fk.pub.recog_pending == 1);
@@ -201,11 +211,11 @@ static void s1_happy_path(void)
     periodic_alive(b, &fk, 104200, 0);            /* 4.2s later: cooldown done */
     CHECK(biz_state(b) == BIZ_ST_IDLE);
 
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 104300);  /* passage completes */
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 104300);  /* passage completes */
     CHECK(fk.pub.used_slots == 1);
     CHECK(fk.pub.free_slots == 19);
 
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 104400);  /* no edge: no double count */
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 104400);  /* no edge: no double count */
     CHECK(fk.pub.used_slots == 1);
 
     biz_destroy(b);
@@ -224,7 +234,7 @@ static void s2_timeout(void)
     b = biz_create(&cfg, &plat);
     periodic_alive(b, &fk, 200000, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 200000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 200000);
     CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
 
     periodic_alive(b, &fk, 201000, 0);
@@ -257,7 +267,7 @@ static void s3_cloud_extend(void)
     b = biz_create(&cfg, &plat);
     periodic_alive(b, &fk, 300000, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 300000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 300000);
     periodic_alive(b, &fk, 303100, 1);             /* past 3s but cloud pending */
     CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
 
@@ -282,7 +292,7 @@ static void s4_core1_dead(void)
     periodic(b, &fk, 400000, 0, 0);             /* hb stays 0: never alive */
     CHECK((fk.pub.fault_bits & 0x04) != 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 400000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 400000);
     CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);    /* via DENY */
     CHECK(fk.notify_01 == 0);                   /* no recognition trigger */
     CHECK(fk.gate_open_calls == 0);
@@ -303,7 +313,7 @@ static void s5_whitelist_reject(void)
     b = biz_create(&cfg, &plat);
     periodic_alive(b, &fk, 500000, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 500000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 500000);
     post_result(b, PLATE_BAD, 0.90f, 0, 500100);
     CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
     CHECK(fk.gate_open_calls == 0);
@@ -330,21 +340,21 @@ static void s6_expiry_and_deny(void)
     b = biz_create(&cfg, &plat);
     periodic_alive(b, &fk, 600000, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 600000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 600000);
     post_result(b, "C11111", 0.9f, 0, 600100);
     CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
     CHECK(fk.gate_open_calls == 0);
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 601000);   /* denied car leaves */
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 601000);   /* denied car leaves */
     periodic_alive(b, &fk, 604200, 0);
     CHECK(biz_state(b) == BIZ_ST_IDLE);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 610000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 610000);
     post_result(b, "D22222", 0.9f, 0, 610100);
     CHECK(fk.gate_open_calls == 0);
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 611000);
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 611000);
     periodic_alive(b, &fk, 614200, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 620000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 620000);
     post_result(b, "E33333", 0.9f, 0, 620100);
     CHECK(fk.gate_open_calls == 1);
 
@@ -461,11 +471,11 @@ static void s8_passage_counting(void)
     for (i = 0; i < 10; i++) {
         int64_t t = 200000 + (int64_t)i * 10000;
 
-        post(b, &fk, BIZ_EV_SHADE_ARRIVE, t);
+        post(b, &fk, BIZ_EV_CAR_ARRIVE, t);
         post_result(b, PLATE_OK1, 0.95f, 0, t + 100);
         periodic_alive(b, &fk, t + 4300, 0);        /* cooldown (4s) expires */
-        post(b, &fk, BIZ_EV_SHADE_CLEAR, t + 4400); /* passage completes */
-        post(b, &fk, BIZ_EV_SHADE_CLEAR, t + 4500); /* same edge: no count */
+        post(b, &fk, BIZ_EV_CAR_LEAVE, t + 4400); /* passage completes */
+        post(b, &fk, BIZ_EV_CAR_LEAVE, t + 4500); /* same edge: no count */
         CHECK(fk.pub.used_slots == i + 1);
         CHECK(fk.pub.free_slots == 30 - (i + 1));
         CHECK(fk.gate_open_calls == i + 1);
@@ -485,10 +495,10 @@ static void s8_passage_counting(void)
     for (i = 0; i < 3; i++) {
         int64_t t = 400000 + (int64_t)i * 10000;
 
-        post(b, &fk, BIZ_EV_SHADE_ARRIVE, t);
+        post(b, &fk, BIZ_EV_CAR_ARRIVE, t);
         post_result(b, PLATE_OK1, 0.95f, 0, t + 100);
         periodic_alive(b, &fk, t + 4300, 0);
-        post(b, &fk, BIZ_EV_SHADE_CLEAR, t + 4400);
+        post(b, &fk, BIZ_EV_CAR_LEAVE, t + 4400);
         CHECK(fk.pub.used_slots == 10 - (i + 1));
         post(b, &fk, BIZ_EV_REQ_GATE_CLOSE, t + 5000);
         post_m4(b, 0, 1, 0, t + 5050);
@@ -498,10 +508,10 @@ static void s8_passage_counting(void)
     for (i = 0; i < 8; i++) {
         int64_t t = 500000 + (int64_t)i * 10000;
 
-        post(b, &fk, BIZ_EV_SHADE_ARRIVE, t);
+        post(b, &fk, BIZ_EV_CAR_ARRIVE, t);
         post_result(b, PLATE_OK1, 0.95f, 0, t + 100);
         periodic_alive(b, &fk, t + 4300, 0);
-        post(b, &fk, BIZ_EV_SHADE_CLEAR, t + 4400);
+        post(b, &fk, BIZ_EV_CAR_LEAVE, t + 4400);
         CHECK(fk.pub.used_slots >= 0);
         CHECK(fk.pub.used_slots + fk.pub.free_slots == 30);
         post(b, &fk, BIZ_EV_REQ_GATE_CLOSE, t + 5000);
@@ -531,7 +541,7 @@ static void s9_slots_clamp(void)
     /* passage 1: gate opens remotely, clear without prior arrive edge */
     post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 900000);
     post_m4(b, 1, 1, 0, 900050);
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 900100);   /* no edge: no count */
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 900100);   /* no edge: no count */
     CHECK(fk.pub.used_slots == 0);
 
     /* passage 2: proper arrive->clear edge completes the count */
@@ -539,8 +549,8 @@ static void s9_slots_clamp(void)
     post_m4(b, 0, 1, 0, 905050);
     post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 910000);
     post_m4(b, 1, 1, 0, 910050);
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 910100);  /* deny path (core1 dead) */
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 910200);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 910100);  /* deny path (core1 dead) */
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 910200);
     CHECK(fk.pub.used_slots == 1);
     CHECK(fk.pub.free_slots == 1);
 
@@ -549,8 +559,8 @@ static void s9_slots_clamp(void)
     post_m4(b, 0, 1, 0, 915050);
     post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 920000);
     post_m4(b, 1, 1, 0, 920050);
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 920100);
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 920200);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 920100);
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 920200);
     CHECK(fk.pub.used_slots == 2);
     CHECK(fk.pub.free_slots == 0);
 
@@ -559,8 +569,8 @@ static void s9_slots_clamp(void)
     post_m4(b, 0, 1, 0, 925050);
     post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 930000);
     post_m4(b, 1, 1, 0, 930050);
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 930100);
-    post(b, &fk, BIZ_EV_SHADE_CLEAR, 930200);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 930100);
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 930200);
     CHECK(fk.pub.used_slots == 2);
     CHECK(fk.pub.free_slots == 0);
 
@@ -613,22 +623,22 @@ static void s10_config(void)
     remove("st_core0.conf");
 }
 
-static void s11_dup_shade(void)
+static void s11_dup_arrive(void)
 {
     app_config_t cfg;
     biz_platform_t plat;
     fake_t fk;
     biz_t *b;
 
-    printf("S11 duplicate shade arrival ignored while busy\n");
+    printf("S11 duplicate car-arrive ignored while busy\n");
     make_cfg(&cfg);
     fake_platform(&plat, &fk);
     b = biz_create(&cfg, &plat);
     periodic_alive(b, &fk, 1100000, 0);
 
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 1100000);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1100000);
     CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
-    post(b, &fk, BIZ_EV_SHADE_ARRIVE, 1100100);
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1100100);
     CHECK(fk.notify_01 == 1);                   /* no second trigger */
     CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
 
@@ -736,6 +746,45 @@ static void s13_log_and_storage(void)
 #endif
 }
 
+static void s14_node_gate_event(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S14 node gate-state event (0x21/0x04) + pre-command guard\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1400000, 0);
+
+    /* A node gate report updates the observed state on its own, so the UI
+     * tracks the real gate without an 0x13 round-trip. */
+    post_gate_state(b, 1, 1400100);
+    CHECK(fk.pub.gate_state == 1);
+    post_gate_state(b, 0, 1400200);
+    CHECK(fk.pub.gate_state == 0);
+
+    /* already closed (observed) -> a close request is deduped away */
+    post(b, &fk, BIZ_EV_REQ_GATE_CLOSE, 1400300);
+    CHECK(fk.gate_close_calls == 0);
+
+    post(b, &fk, BIZ_EV_REQ_GATE_OPEN, 1400400);
+    CHECK(fk.gate_open_calls == 1);
+    CHECK(fk.pub.gate_state == 1);
+
+    /* a report that could predate our own command is ignored inside the
+     * guard window (same rule as the 0x23 answer) ... */
+    post_gate_state(b, 0, 1400800);
+    CHECK(fk.pub.gate_state == 1);
+    /* ... and accepted once the guard has expired */
+    post_gate_state(b, 0, 1402600);
+    CHECK(fk.pub.gate_state == 0);
+
+    biz_destroy(b);
+}
+
 int main(void)
 {
     log_set_level(LOG_WARN);    /* keep the output focused on failures */
@@ -750,9 +799,10 @@ int main(void)
     s8_passage_counting();
     s9_slots_clamp();
     s10_config();
-    s11_dup_shade();
+    s11_dup_arrive();
     s12_link_fault();
     s13_log_and_storage();
+    s14_node_gate_event();
 
     store_shutdown();
     printf("\n%d checks, %d failures\n", g_checks, g_fails);

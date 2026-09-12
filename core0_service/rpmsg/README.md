@@ -18,7 +18,7 @@
 
 - 帧：`AA 55 | type | seq(2B LE) | len(2B LE) | payload | CRC16(2B LE over type..payload)`；payload ≤ 480B。
 - 下行 0x11 开闸 / 0x12 关闸 / 0x13 查询（空 payload）；0x14 配置预留。
-- 上行 0x21 CAN 事件（17B）、0x22 节点离线/恢复（1B）、0x23 M4 全量状态（4B）、0x7E 心跳（1B 序号）。
+- 上行 0x21 **节点语义事件**（9B：`code|arg u16 LE|status|node_id|tick u32 LE`，接口 v2）、0x22 节点离线/恢复（1B）、0x23 M4 全量状态（4B）、0x7E 心跳（1B 序号）。
 - 心跳双向 500ms；1s 无任何有效帧 → LINK_DOWN；重连成功后自动发 0x13 全量重同步。
 
 ## 板端编译与运行

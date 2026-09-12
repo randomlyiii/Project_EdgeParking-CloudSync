@@ -25,24 +25,48 @@
 #define RPMSG_TX_CONFIG       0x14u   /* 配置下发（预留，TLV） */
 
 /* ---- type：上行 M4→Core0 ---- */
-#define RPMSG_RX_CAN_EVENT    0x21u   /* CAN 事件转发，17B：id(4B LE)+dlc(1B)+data(8B)+tick(4B LE) */
+#define RPMSG_RX_NODE_EVENT   0x21u   /* 节点语义事件 v2，9B（v1 的 17B CAN 原始透传已废弃） */
 #define RPMSG_RX_NODE_STATE   0x22u   /* 从节点离线/恢复：1B（0=离线 1=恢复） */
 #define RPMSG_RX_M4_STATE     0x23u   /* M4 全量状态：4B = 闸(1B)+在线(1B)+CAN错误计数 u16 LE */
 #define RPMSG_RX_HEARTBEAT    0x7Eu   /* 双向心跳：1B 序号 */
 
 /* ---- 上行 payload 布局（偏移从 0 起） ---- */
-#define RPMSG_CAN_EVT_LEN     17u
+#define RPMSG_NODE_EVT_LEN    9u      /* code(1B)+arg(2B LE)+status(1B)+node_id(1B)+tick(4B LE) */
 #define RPMSG_M4_STATE_LEN    4u
 #define RPMSG_NODE_STATE_LEN  1u
 #define RPMSG_HB_LEN          1u
 
-/* 0x21 CAN 事件转发（与 docs/protocols.md §3 同步） */
+/* ---- 节点事件码（与 CAN 0x200 d[0] 同一张表；权威表 docs/protocols.md §1） ---- */
+#define EVT_CAR_ARRIVE        0x01u   /* arg=0：车/物体进入检测区 */
+#define EVT_CAR_LEAVE         0x02u   /* arg=0：车/物体离开检测区 */
+#define EVT_NODE_FAULT        0x03u   /* arg=故障类别：故障"发生"时上报一次 */
+#define EVT_GATE_STATE        0x04u   /* arg=0 关 / 1 开（2=动作中，预留未用） */
+#define EVT_NODE_READY        0x05u   /* arg=0：节点上电就绪 */
+
+/* 故障类别（EVT_NODE_FAULT 的 arg） */
+#define EVT_FAULT_SENSOR      1u
+#define EVT_FAULT_ACTUATOR    2u
+#define EVT_FAULT_CAN         3u
+
+/* ---- 节点状态位（0x21 payload status；与 CAN 0x200 d[3] 同源） ---- */
+#define NODE_STAT_GATE_OPEN    0x01u  /* bit0：执行器到位（闸开） */
+#define NODE_STAT_PRESENCE     0x02u  /* bit1：检测区有车/物体 */
+#define NODE_STAT_SENSOR_FAULT 0x04u  /* bit2：传感器子系统故障 */
+#define NODE_STAT_CAN_ERR      0x08u  /* bit3：节点侧 CAN 发送异常 */
+
+/* ---- 节点号（0x21 payload node_id） ---- */
+#define RPMSG_NODE_ID_MAIN    0x01u   /* 主检测节点（当前 = C8T6 光感+舵机节点） */
+
+/* 0x21 节点语义事件（v2）：
+   ⭐ 只携带语义量 —— 不含 lux/drop% 等传感器原始值，
+   板级因此对"下位机用什么传感器"零假设（换传感器不动 Linux 代码）。 */
 typedef struct {
-    uint32_t can_id;                  /* CAN ID（标准帧 11bit 装入 u32），LE */
-    uint8_t  dlc;                     /* 数据长度 */
-    uint8_t  data[8];                 /* 8B 数据域（未用 0 填充），字节原样搬运 */
-    uint32_t tick;                    /* M4 本地毫秒，LE */
-} rpmsg_can_event_t;
+    uint8_t  code;                    /* 事件码 EVT_* */
+    uint16_t arg;                     /* 语义参数，LE，含义由 code 决定 */
+    uint8_t  status;                  /* 节点状态位快照 NODE_STAT_* */
+    uint8_t  node_id;                 /* 节点号 RPMSG_NODE_ID_* */
+    uint32_t tick;                    /* M4 接收时刻（osKernelGetTickCount，ms），LE */
+} rpmsg_node_event_t;
 
 /* 0x23 M4 全量状态 */
 typedef struct {

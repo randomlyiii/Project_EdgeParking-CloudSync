@@ -183,28 +183,51 @@ static void decode_frame(const rpmsg_frame_t *fr, void *opaque)
     memset(&ev, 0, sizeof(ev));
 
     switch (fr->type) {
-    case RPMSG_RX_CAN_EVENT: {
-        rpmsg_can_event_t ce;
-        if (rpmsg_decode_can_event(fr, &ce) != 0) {
-            LOGW("rx", "0x21 decode failed, len=%u", (unsigned)fr->len);
+    case RPMSG_RX_NODE_EVENT: {
+        rpmsg_node_event_t ne;
+        if (rpmsg_decode_node_event(fr, &ne) != 0) {
+            /* len=17 means a v1 CAN passthrough frame: the M4 firmware is
+             * still the old one (interface v2 changed the 0x21 payload). */
+            LOGW("rx", "0x21 decode failed: len=%u (v1 CAN passthrough? "
+                 "reflash M4 with interface v2)", (unsigned)fr->len);
             return;
         }
-        if (ce.can_id == 0x200u && ce.dlc >= 1u) {
-            uint16_t lux = (uint16_t)((ce.data[1] << 8) | ce.data[2]);
-            /* full observation logging incl. lux/drop raw values */
-            LOGI("rx", "CAN 0x200 ev=0x%02x lux=%u drop=%u%% status=0x%02x",
-                 (unsigned)ce.data[0], (unsigned)lux,
-                 ce.dlc >= 4u ? (unsigned)ce.data[3] : 0u,
-                 ce.dlc >= 5u ? (unsigned)ce.data[4] : 0u);
-            ev.type = (ce.data[0] == 0x01u) ? BIZ_EV_SHADE_ARRIVE
-                                            : BIZ_EV_SHADE_CLEAR;
+        LOGI("rx", "node %u event 0x%02x arg=%u status=0x%02x tick=%u",
+             (unsigned)ne.node_id, (unsigned)ne.code, (unsigned)ne.arg,
+             (unsigned)ne.status, (unsigned)ne.tick);
+        switch (ne.code) {
+        case EVT_CAR_ARRIVE:
+            ev.type = BIZ_EV_CAR_ARRIVE;
             queue_push(q, &ev);
-        } else if (ce.can_id == 0x210u) {
-            LOGD("rx", "CAN 0x210 heartbeat id=0x%03X dlc=%u",
-                 (unsigned)ce.can_id, (unsigned)ce.dlc);
-        } else {
-            LOGD("rx", "CAN id=0x%03X dlc=%u (not business relevant)",
-                 (unsigned)ce.can_id, (unsigned)ce.dlc);
+            break;
+        case EVT_CAR_LEAVE:
+            ev.type = BIZ_EV_CAR_LEAVE;
+            queue_push(q, &ev);
+            break;
+        case EVT_GATE_STATE:
+            if (ne.arg > 1u) {
+                LOGD("rx", "gate state arg=%u (moving/reserved) ignored",
+                     (unsigned)ne.arg);
+                break;
+            }
+            ev.type = BIZ_EV_GATE_STATE;
+            ev.b0 = (uint8_t)ne.arg;
+            queue_push(q, &ev);
+            break;
+        case EVT_NODE_FAULT:
+            /* notification only: the current truth is the status bit in
+             * every later event/heartbeat (NODE_STAT_SENSOR_FAULT) */
+            LOGW("rx", "node %u fault class=%u status=0x%02x",
+                 (unsigned)ne.node_id, (unsigned)ne.arg, (unsigned)ne.status);
+            break;
+        case EVT_NODE_READY:
+            LOGI("rx", "node %u ready (status=0x%02x dev status bits)",
+                 (unsigned)ne.node_id, (unsigned)ne.status);
+            break;
+        default:
+            LOGD("rx", "node event 0x%02x ignored (unknown code)",
+                 (unsigned)ne.code);
+            break;
         }
         break;
     }

@@ -14,7 +14,7 @@ two readers on the same tty split the byte stream and both look broken.
 
 Frame: AA 55 | type | seq(2 LE) | len(2 LE) | payload | CRC16(2 LE over type..payload)
 Types: 0x11 open / 0x12 close / 0x13 query -> M4 answers 0x23
-       0x21 CAN event (17B) / 0x22 node offline(0)|online(1)
+       0x21 node semantic event (9B: code|arg LE|status|node_id|tick LE) / 0x22 node offline(0)|online(1)
        0x23 M4 state (gate, node_online, can_err u16 LE) / 0x7E heartbeat (1B seq)
 
 Exit code 0 = all checks passed.
@@ -34,10 +34,19 @@ NAMES = {
     0x11: "gate-open(cmd)",
     0x12: "gate-close(cmd)",
     0x13: "query-state(cmd)",
-    0x21: "CAN-event",
+    0x21: "node-event",
     0x22: "node-state",
     0x23: "M4-state",
     0x7E: "heartbeat",
+}
+
+# node event codes (same table as CAN 0x200 d[0]; docs/protocols.md section 1)
+EVT = {
+    0x01: "CAR_ARRIVE",
+    0x02: "CAR_LEAVE",
+    0x03: "NODE_FAULT",
+    0x04: "GATE_STATE",
+    0x05: "NODE_READY",
 }
 
 
@@ -97,13 +106,15 @@ def describe(ftype, pl):
             "OPEN" if gate else "CLOSE", "ONLINE" if node else "OFFLINE", err)
     if ftype == 0x22 and len(pl) >= 1:
         return "node %s" % ("ONLINE" if pl[0] else "OFFLINE")
-    if ftype == 0x21 and len(pl) >= 17:
-        cid = struct.unpack_from("<I", pl, 0)[0]
-        dlc = pl[4]
-        data = pl[5:13]
-        tick = struct.unpack_from("<I", pl, 13)[0]
-        return "can_id=0x%03X dlc=%u data=%s tick=%u" % (
-            cid, dlc, data[:dlc].hex(), tick)
+    if ftype == 0x21 and len(pl) == 17:
+        # interface v2 changed the 0x21 payload: a 17B frame means the M4
+        # firmware is still the old one (v1 raw CAN passthrough).
+        return "V1 CAN-passthrough payload (17B) - reflash M4 with interface v2"
+    if ftype == 0x21 and len(pl) >= 9:
+        code, arg, status, node = struct.unpack_from("<BHBB", pl, 0)
+        tick = struct.unpack_from("<I", pl, 5)[0]
+        return "node=%u ev=0x%02X(%s) arg=%u status=0x%02X tick=%u" % (
+            node, code, EVT.get(code, "?"), arg, status, tick)
     if ftype == 0x7E and len(pl) >= 1:
         return "seq=%u" % pl[0]
     return "len=%u" % len(pl)

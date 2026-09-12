@@ -5,8 +5,9 @@
   * @brief   MP157 M4 RPMSG 网关桥：CAN 主端(can_master) ↔ A7-Linux(OpenAMP/VIRT_UART)
   *
   *          职责(PhaseMd/04 P3-02/03/04)：
-  *          - 上行: CAN 0x200 事件 → 0x21 帧转发 A7；C8T6 离线/恢复边沿 → 0x22；
-  *                  0x13 查询 → 0x23 全量状态；500ms 0x7E 心跳(双向)。
+  *          - 上行: CAN 0x200 节点事件 → 0x21 语义事件帧(9B, 接口 v2)转发 A7;
+  *                  C8T6 离线/恢复边沿 → 0x22；0x13 查询 → 0x23 全量状态；
+  *                  500ms 0x7E 心跳(双向)。
   *          - 下行: 0x11/0x12 开/关闸 → CAN_Master_RequestCmd()(经 CANRxTask 发 0x100)；
   *                  0x13 查询。
   *          - 故障: 1s 查 FDCAN2 HAL_FDCAN_GetProtocolStatus(BusOff) → 自动 Stop/Start
@@ -46,7 +47,8 @@ extern "C" {
 #define RPMSG_BRIDGE_VUART_INIT_DELAY_MS  1000u /* 任务启动后首试延时 */
 #define RPMSG_BRIDGE_VUART_INIT_RETRY_MS  2000u /* 失败重试间隔 */
 
-/* 0x21 转发过滤: 1=只转发 0x200 事件帧(默认); 0=连 0x210 心跳也转发 */
+/* 0x21 转发过滤: 0 = 只转发 0x200 事件帧(默认, 只有它是语义事件);
+   1 = 连 0x210 心跳也塞进 0x21(仅调试用 —— 0x210 会被当事件解码, 出现假 CAR_ARRIVE, 勿开) */
 #define RPMSG_BRIDGE_FWD_HEARTBEAT  0u
 
 /* 运行监视快照(调试器 live watch / 排障; 与 g_can_master_mon 同风格) */

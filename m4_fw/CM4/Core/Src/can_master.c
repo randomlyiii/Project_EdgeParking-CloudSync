@@ -10,6 +10,11 @@
   *          - 发: HAL_FDCAN_AddMessageToTxFifoQ 提交到 TX FIFO; 统一在 Poll 里发送,
   *            单写者免锁; NART=DISABLE(与从端一致, 单发不重传, 网路隔离)。
   *          - 在线判定仅在主端做: 3s 无 0x210 → online=0(供 RPMSG 上报 A7)。
+  *          - 收到 0x200 事件 → 自动回 0x110/EVENT_ACK(kind=0x01)。
+  *
+  *          ⭐ 接口 v2(2026-09-11): 设备抽象 —— 本层只解析/保存语义量
+  *          (事件码/语义参数/状态位/节点身份/版本)，**不保存 lux/drop% 等传感器
+  *          原始值**；板级因此对"下位机用了什么传感器"零假设。
   *
   *          协议表见 c8t6/can.md。本文件只允许改 USER CODE 之间的代码。
   *          ⚠️ MP1 HAL 无 HAL_FDCAN_AddTxMessage(那是 MP2 的), 用 AddMessageToTxFifoQ。
@@ -19,6 +24,8 @@
 #include "can_master.h"
 #include "fdcan.h"
 #include "cmsis_os2.h"
+#include "FreeRTOS.h"          /* taskENTER_CRITICAL: 保护"待发指令"三字节的读+清 */
+#include "task.h"
 #include <string.h>
 
 /* 从端状态快照(主端维护; 目前仅在 CANRxTask 单写者, 读方为调试器/RPMSG)。
@@ -28,6 +35,11 @@ CAN_MasterMonitor_t g_can_master_mon;
 /* 调试器/外部可直接改写即触发的待发指令(单次) */
 volatile uint8_t g_can_master_cmd_pending = 0u;
 volatile uint8_t g_can_master_cmd_value   = 0u;
+volatile uint8_t g_can_master_cmd_arg     = 0u;
+
+/* 下行指令序号(0x100 d[2]); 从端在 0x110/CMD_ACK 里回显, 用于确认"这条命令被处理了"。
+   只在成功入 FIFO 时自增, 失败不消耗序号。 */
+static uint8_t s_cmd_seq = 0u;
 
 /* RPMSG 桥收帧钩子(可空; 单写者: Rpmsg_Task 早期注册一次, 之后只读) */
 static CAN_Master_EventHook_t s_evt_hook = NULL;
@@ -62,11 +74,13 @@ void CAN_Master_Init(void)
   /* 失败不硬复位: online 维持 0, 后续 Poll 仍运行(不会收帧) */
 }
 
-uint8_t CAN_Master_SendCmd(uint8_t cmd)
+/* 发一帧 0x100 指令: cmd(1B) | arg(1B) | seq(1B) | rsv[5] */
+uint8_t CAN_Master_SendCmd(uint8_t cmd, uint8_t arg)
 {
   FDCAN_TxHeaderTypeDef tx;
   uint8_t data[8];
   HAL_StatusTypeDef st;
+  uint8_t seq = s_cmd_seq;
 
   memset(&tx, 0, sizeof(tx));
   memset(data, 0, sizeof(data));
@@ -76,10 +90,13 @@ uint8_t CAN_Master_SendCmd(uint8_t cmd)
   tx.DataLength  = FDCAN_DLC_BYTES_8;   /* 经典 CAN 数据帧 DLC=8 */
   tx.FDFormat    = FDCAN_CLASSIC_CAN;
   data[0] = cmd;
+  data[1] = arg;
+  data[2] = seq;
 
   st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &tx, data);
   if (st == HAL_OK)
   {
+    s_cmd_seq = (uint8_t)(seq + 1u);     /* 只在真正发出时消耗序号 */
     g_can_master_mon.tx_ok_count++;
     return 0u;
   }
@@ -87,10 +104,10 @@ uint8_t CAN_Master_SendCmd(uint8_t cmd)
   return 1u;
 }
 
-/* 回 0x110 事件确认帧(在 CAN_Master_Poll 收到 C8T6 的 0x200 后自动调用):
-   d[0]=回显 0x200 的 d[0] 事件码(0x01 遮光/车到位 / 0x00 恢复), 其余字节 0。
-   C8T6 侧据此在 OLED 行4 显示确认标识(见 c8t6/freertos.c)。 */
-uint8_t CAN_Master_SendAck(uint8_t ev)
+/* 回一帧 0x110 回执(kind|code|arg|rsv[5]):
+   主端每收到一帧 0x200 自动回 kind=CAN_ACK_KIND_EVENT/d[1]=事件码(从端据此点 OLED)。
+   从端**不产生**指令回执(v2 定稿删除: 0x110 在主→从段, 从端发出去无人接收)。 */
+uint8_t CAN_Master_SendAck(uint8_t kind, uint8_t code, uint8_t arg)
 {
   FDCAN_TxHeaderTypeDef tx;
   uint8_t data[8];
@@ -103,7 +120,9 @@ uint8_t CAN_Master_SendAck(uint8_t ev)
   tx.TxFrameType = FDCAN_DATA_FRAME;
   tx.DataLength  = FDCAN_DLC_BYTES_8;   /* 经典 CAN 数据帧 DLC=8 */
   tx.FDFormat    = FDCAN_CLASSIC_CAN;
-  data[0] = ev;
+  data[0] = kind;
+  data[1] = code;
+  data[2] = arg;
 
   st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &tx, data);
   if (st == HAL_OK)
@@ -115,9 +134,10 @@ uint8_t CAN_Master_SendAck(uint8_t ev)
   return 1u;
 }
 
-void CAN_Master_RequestCmd(uint8_t cmd)
+void CAN_Master_RequestCmd(uint8_t cmd, uint8_t arg)
 {
   g_can_master_cmd_value   = cmd;
+  g_can_master_cmd_arg     = arg;
   g_can_master_cmd_pending = 1u;
 }
 
@@ -142,16 +162,26 @@ void CAN_Master_Poll(void)
   if ((now - s_dbg_gate_tick) >= CAN_MASTER_DEBUG_AUTO_GATE_MS)
   {
     s_dbg_gate_tick = now;
-    (void)CAN_Master_SendCmd(CAN_CMD_OPEN_GATE);
+    (void)CAN_Master_SendCmd(CAN_CMD_GATE_OPEN, 0u);
   }
 #endif
 
-  /* ---- 发: 提交外部(调试器/RPMSG)请的指令, 单次 ---- */
+  /* ---- 发: 提交外部(RPMSG/调试器)请的指令, 单次 ----
+     读 cmd/arg 与清 pending 必须原子: 写方(Rpmsg_Task, 与 CANRxTask 同优先级时间片)
+     在 value/arg 之后置 pending=1, 若被抢占就会出现"发了旧指令/丢了新指令/发出 cmd=0"。
+     临界区内不做 HAL 调用, 极短。 */
   if (g_can_master_cmd_pending != 0u)
   {
+    uint8_t cmd;
+    uint8_t arg;
+
+    taskENTER_CRITICAL();
+    cmd = g_can_master_cmd_value;
+    arg = g_can_master_cmd_arg;
     g_can_master_cmd_pending = 0u;
-    (void)CAN_Master_SendCmd(g_can_master_cmd_value);
-    g_can_master_cmd_value = 0u;
+    taskEXIT_CRITICAL();
+
+    (void)CAN_Master_SendCmd(cmd, arg);
   }
 
   /* ---- 收: 轮询清空 FDCAN2 RX FIFO0(零中断) ---- */
@@ -177,19 +207,24 @@ void CAN_Master_Poll(void)
     }
     switch (rh.Identifier)
     {
-      case CAN_MASTER_EVT_ID:   /* 0x200 事件: ev/lux(大端)/drop%/status */
+      case CAN_MASTER_EVT_ID:   /* 0x200 事件: ev|arg(大端)|status|tick(大端) */
         g_can_master_mon.last_ev      = data[0];
-        g_can_master_mon.last_lux     = (uint16_t)((uint16_t)data[1] << 8) | data[2];
-        g_can_master_mon.last_drop    = data[3];
-        g_can_master_mon.slave_status = data[4];
+        g_can_master_mon.last_arg     = (uint16_t)(((uint16_t)data[1] << 8) | data[2]);
+        g_can_master_mon.slave_status = data[3];
         g_can_master_mon.last_ev_tick = now;
         g_can_master_mon.ev_count++;
-        (void)CAN_Master_SendAck(data[0]);   /* 事件确认 0x110 回执(回显事件码) */
+        (void)CAN_Master_SendAck(CAN_ACK_KIND_EVENT, data[0], 0u);  /* 事件确认 */
         break;
-      case CAN_MASTER_HB_ID:    /* 0x210 心跳: status/uptime */
-        g_can_master_mon.slave_status = data[0];
-        g_can_master_mon.last_uptime  = data[1];
-        g_can_master_mon.last_hb_tick = now;
+      case CAN_MASTER_HB_ID:    /* 0x210 心跳: status|uptime_ms(大端)|dev_type|fw_ver|node_id */
+        g_can_master_mon.slave_status   = data[0];
+        g_can_master_mon.last_uptime_ms = ((uint32_t)data[1] << 24) |
+                                          ((uint32_t)data[2] << 16) |
+                                          ((uint32_t)data[3] << 8)  |
+                                          ((uint32_t)data[4]);
+        g_can_master_mon.dev_type       = data[5];
+        g_can_master_mon.fw_ver         = data[6];
+        g_can_master_mon.node_id        = data[7];
+        g_can_master_mon.last_hb_tick   = now;
         g_can_master_mon.hb_count++;
         g_can_master_mon.online = 1u;   /* 收到心跳即在线 */
         break;

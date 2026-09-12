@@ -77,7 +77,7 @@ struct biz {
 
     /* slots / passage */
     int32_t     used;
-    uint8_t     shading;
+    uint8_t     presence;          /* node reports a vehicle in the zone */
     uint8_t     pass_pending;
 
     /* health / fault bits */
@@ -247,23 +247,23 @@ static int gate_cmd(biz_t *b, int open, const char *source)
 /* ------------------------------------------------------------------ */
 /* event handlers                                                      */
 
-static void on_shade_arrive(biz_t *b)
+static void on_car_arrive(biz_t *b)
 {
-    if (b->shading) {
-        LOGI("shade", "duplicate arrive while already shaded, ignored");
+    if (b->presence) {
+        LOGI("node", "duplicate arrive while already present, ignored");
         return;
     }
-    b->shading = 1;
-    LOGI("shade", "car arrival observed (CAN 0x200 d0=0x01)");
+    b->presence = 1;
+    LOGI("node", "car arrival observed (node event 0x01 CAR_ARRIVE)");
 
     if (b->st != BIZ_ST_IDLE) {
         /* spec 5.1.3.2: no double registration / double trigger */
-        LOGW("shade", "busy in %s: duplicate registration ignored",
+        LOGW("node", "busy in %s: duplicate registration ignored",
              biz_state_name(b->st));
         return;
     }
 
-    to_state(b, BIZ_ST_CAR_WAIT, "shade event 0x200 d0=0x01");
+    to_state(b, BIZ_ST_CAR_WAIT, "node event 0x01 CAR_ARRIVE");
     store_event("car_arrive", "", "");
 
     if (!b->core1_alive) {
@@ -284,14 +284,14 @@ static void on_shade_arrive(biz_t *b)
     to_state(b, BIZ_ST_RECOGNIZING, "recog_pending=1, trigger 0x01 sent");
 }
 
-static void on_shade_clear(biz_t *b)
+static void on_car_leave(biz_t *b)
 {
-    if (!b->shading) {
-        LOGD("shade", "clear without prior arrival (query reply?), ignored");
+    if (!b->presence) {
+        LOGD("node", "leave without prior arrival (duplicate/query), ignored");
         return;
     }
-    b->shading = 0;
-    LOGI("shade", "shading recovered (CAN 0x200 d0=0x00)");
+    b->presence = 0;
+    LOGI("node", "detection cleared (node event 0x02 CAR_LEAVE)");
 
     if (b->pass_pending) {
         int32_t used;
@@ -392,6 +392,29 @@ static void on_m4_state(biz_t *b, const biz_event_t *ev)
     refresh_public(b);
 }
 
+/* EVT_GATE_STATE (0x21/0x04): the node reports its own actuator position on
+ * every arrival edge, so the gate truth reaches the UI without waiting for
+ * the next 0x13/0x23 poll. Same guard as on_m4_state: a report that could
+ * predate our own command must not overwrite the commanded target. */
+static void on_gate_state(biz_t *b, const biz_event_t *ev)
+{
+    uint8_t target = ev->b0 ? 1u : 0u;
+
+    if (b->last_cmd_ms != 0 &&
+        (b->now - b->last_cmd_ms) < (int64_t)GATE_REPORT_GUARD_MS) {
+        LOGD("gate", "node gate report ignored inside guard window (would say %s)",
+             target ? "open" : "closed");
+        return;
+    }
+    if (target == b->gate_state)
+        return;
+    b->gate_state = target;
+    LOGI("gate", "gate state now %s (node event 0x04)",
+         b->gate_state ? "OPEN" : "CLOSED");
+    store_gate(b->gate_state ? "open" : "close", "state");
+    refresh_public(b);
+}
+
 static void on_link(biz_t *b, const biz_event_t *ev)
 {
     int up = ev->b0 ? 1 : 0;
@@ -460,8 +483,9 @@ void biz_post(biz_t *b, const biz_event_t *ev, int64_t now_ms)
     b->now = now_ms;
 
     switch (ev->type) {
-    case BIZ_EV_SHADE_ARRIVE:  on_shade_arrive(b); break;
-    case BIZ_EV_SHADE_CLEAR:   on_shade_clear(b); break;
+    case BIZ_EV_CAR_ARRIVE:    on_car_arrive(b); break;
+    case BIZ_EV_CAR_LEAVE:     on_car_leave(b); break;
+    case BIZ_EV_GATE_STATE:    on_gate_state(b, ev); break;
     case BIZ_EV_NODE_STATE:    on_node_state(b, ev); break;
     case BIZ_EV_M4_STATE:      on_m4_state(b, ev); break;
     case BIZ_EV_LINK:          on_link(b, ev); break;

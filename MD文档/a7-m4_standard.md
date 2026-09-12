@@ -93,7 +93,7 @@ rpmsg_bridge.c：`VIRT_UART_Init` 不在一进任务就做，改为**任务启�
 - 板端无 can-utils 的 `timeout` 命令（`-T` 不可用），需用后台+kill 方式抓包。
 
 ### 4.7 遗留
-① C8T6 遮光事件（手遮 → M4 → A7 0x21）与断链 0x22 边沿未测（C8T6 在场可补）；
+① C8T6 手遮事件（→ M4 → A7 0x21 `ev=0x01 CAR_ARRIVE`）与断链 0x22 边沿未测（C8T6 在场可补；**须 C8T6+M4 同时烧到接口 v2**）；
 ② 新 recipe 下重启稳定性待复测（can0 up 保持时多次 stop/start）；③ A7 正式服务交叉编译方案。
 
 ### 4.1 已验证（两次全通）
@@ -129,7 +129,7 @@ echo 'file drivers/remoteproc/remoteproc_virtio.c +p' > /sys/kernel/debug/dynami
 
 - [x] ttyRPMSG0 出现，0x13→0x23、0x7E 心跳、CRC 0 错（python3 免编译脚本，两次全通）
 - [x] 0x11/0x12 开/关闸经 RPMSG → M4 → CAN 0x100 → C8T6，OLED 行3 Gate OPEN/CLOSE 翻转（2026-09-10 真机 ✅；SG90 舵机本体未挂，逻辑/帧路径已验证）
-- [ ] 手遮 BH1750 → 0x200 → M4 → A7 收 0x21（17B: id+dlc+data+tick）
+- [ ] 手遮 BH1750 → 0x200 → M4 → A7 收 0x21（**9B 语义帧**：`code|arg LE|status|node_id|tick LE`；接口 v2，无 lux/drop）
 - [ ] C8T6 断链 → M4 发 0x22 边沿、恢复再 0x22
 - [ ] A7 侧断链/重连：rpmsg_link 1s 判 LINK_DOWN → 重开 → 自动 0x13 重同步
 
