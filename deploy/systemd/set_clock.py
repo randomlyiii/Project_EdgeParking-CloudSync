@@ -22,10 +22,17 @@ the clock stayed at 2020 and every HTTPS request then died with
 "CERTIFICATE_VERIFY_FAILED: certificate is not yet valid" - which looks like a
 cloud bug, not a clock bug. The unit now passes --retries/--delay.
 
+Why the lease gate (2026-09-16 "with WiFi off the board hangs at the network
+step"): with no address on the interface there is nothing to reach, so retrying
+8x10 s only keeps the journal busy. One clear line and exit instead - the
+retries stay for the case that DOES deserve them (lease up, DNS still warming).
+The unit is no longer in front of park-ui/m4-load/core0-bus either.
+
 Exit codes: 0 clock set (or already within tolerance), 1 nothing reachable.
 ASCII only (board rule).
 """
 import email.utils
+import os
 import socket
 import subprocess
 import sys
@@ -44,6 +51,35 @@ TIMEOUT_S = 5
 def log(msg, verbose):
     if verbose:
         sys.stderr.write("set_clock: %s\n" % msg)
+
+
+def ip_tool():
+    """Absolute path to `ip`, the way wifi_up.sh resolves its tools."""
+    for d in ("/sbin", "/usr/sbin", "/bin", "/usr/bin"):
+        p = os.path.join(d, "ip")
+        if os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def has_ipv4_lease(iface):
+    """False only when we can POSITIVELY see that the interface has no address.
+
+    2026-09-16 ("with WiFi off the board hangs at the network step"): without a
+    lease there is nothing to reach, and the 8x10 s retry loop below would just
+    keep the journal busy. But "cannot tell" (no `ip`, no interface) must keep
+    the old retry behaviour - the link also comes up asynchronously, and a clock
+    that stays in 2020 breaks every HTTPS request later.
+    """
+    ip = ip_tool()
+    if ip is None:
+        return True
+    try:
+        out = subprocess.check_output([ip, "-4", "addr", "show", iface],
+                                      stderr=subprocess.STDOUT)
+    except Exception:                                 # noqa: BLE001
+        return True
+    return b"inet " in out
 
 
 def http_date(host, port):
@@ -107,6 +143,14 @@ def main(argv):
     if args:
         host, _, port = args[0].partition(":")
         sources = [(host, int(port or 80))]
+
+    # No link => no HTTP => no clock. Say so once instead of retrying blind.
+    iface = os.environ.get("PARK_UI_WIFI", "wlan0")
+    if not has_ipv4_lease(iface):
+        sys.stderr.write(
+            "set_clock: no IPv4 lease on %s -> nothing to reach, skipping %d "
+            "attempt(s) (check wifi-up / the AP)\n" % (iface, retries))
+        return 1
 
     attempt = 1
     while attempt <= retries:

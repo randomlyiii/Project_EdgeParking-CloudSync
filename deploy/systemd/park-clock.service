@@ -3,11 +3,16 @@
 # observed on 2026-09-11), and a wrong clock makes every HTTPS certificate
 # "not yet valid" - which breaks the step-7 cloud fallback while the network
 # itself is perfectly fine. This oneshot sets the clock from an HTTP Date
-# header (plain HTTP works even with a wrong clock) before the UI starts.
+# header (plain HTTP works even with a wrong clock). It does NOT gate the UI.
 Description=EdgeParking clock sync (no-RTC board, HTTP Date)
 After=network-online.target board-power.service wifi-up.service
 Wants=network-online.target wifi-up.service
-Before=m4-load.service core0-bus.service park-ui.service
+# ⛔ Must NOT gate the local stack (2026-09-16): this unit can spend minutes
+# retrying an unreachable HTTP host, and the old Before= edge pointing at
+# m4-load / core0-bus / park-ui handed that delay straight to the panel ("with
+# WiFi off the board hangs at the network step"). The clock only matters for
+# cloud TLS, and park-clock.timer retries it 3 min after boot once the link is
+# actually up. (Ordering the other way is still fine: it waits for wifi-up.)
 
 [Service]
 Type=oneshot
@@ -16,7 +21,9 @@ RemainAfterExit=yes
 # The '-' prefix ignores a non-zero exit (offline demo, logger absent).
 # --retries/--delay: at boot DHCP or DNS may not be ready yet; a single silent
 # failure leaves the board in 2020 and every HTTPS request then fails with
-# "certificate is not yet valid" (2026-09-11 real incident). Retry for ~80 s.
+# "certificate is not yet valid" (2026-09-11 real incident). Retry for ~80 s -
+# but only when the interface HAS a lease; with no link set_clock.py exits at
+# once instead of retrying blind (2026-09-16).
 ExecStart=-/bin/sh -c 'p=/bin/python3; [ -x $p ] || p=/usr/bin/python3; $p /opt/park_ui/set_clock.py -v --retries 8 --delay 10 2>&1 | logger -t park-clock'
 TimeoutStartSec=180
 

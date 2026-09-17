@@ -108,7 +108,8 @@ else
     INSTALL_UI=0
 fi
 # clock helper: the board has no RTC and boots in 2020, which breaks every
-# HTTPS certificate -> park-clock.service runs this before park-ui (step [9/9])
+# HTTPS certificate -> park-clock.service sets it. It no longer runs before
+# park-ui: an unreachable HTTP host must not hold the panel (2026-09-16).
 cp "$DIR/set_clock.py" /opt/park_ui/set_clock.py
 chmod +x /opt/park_ui/set_clock.py
 echo "  installed /opt/park_ui/set_clock.py"
@@ -198,7 +199,7 @@ systemctl start park-clock.service 2>/dev/null || true
 # wifi-up - if DHCP/DNS is late it fails silently and the clock stays in 2020
 systemctl enable park-clock.timer 2>/dev/null || true
 systemctl start park-clock.timer 2>/dev/null || true
-echo "  enabled park-clock.service + park-clock.timer (HTTP Date -> date -s, before park-ui)"
+echo "  enabled park-clock.service + park-clock.timer (HTTP Date -> date -s)"
 systemctl daemon-reload
 if [ "$INSTALL_M4" = "1" ]; then
     cp "$DIR/m4-load.service" /etc/systemd/system/m4-load.service
@@ -219,7 +220,8 @@ fi
 systemctl daemon-reload
 
 echo
-echo "done. boot chain: board-power -> wifi-up -> park-clock -> m4-load -> core0-bus -> park-ui"
+echo "done. boot chain: board-power -> m4-load -> core0-bus -> park-ui (local stack, never waits for WiFi)"
+echo "     WiFi + clock run beside it: wifi-up -> park-clock (a missing AP must not hold the panel)"
 echo "optional extra env for the UI: /etc/park-ui.env (e.g. PARK_UI_TTY=/dev/ttyACM0, PARK_UI_WIFI=wlan0)"
 echo
 echo "start everything now:"

@@ -6,11 +6,17 @@
 #     wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf
 #     udhcpc -i wlan0
 # typed by hand - and a link that never comes up shows up as a "cloud failure"
-# on the panel. Runs before park-clock (which fetches an HTTP Date) and park-ui.
+# on the panel. Runs before park-clock only (the one unit that needs the link).
 Description=EdgeParking WiFi bring-up (wlan0: ip link up + wpa_supplicant + udhcpc)
 After=board-power.service sysinit.target
 Wants=board-power.service
-Before=park-clock.service m4-load.service core0-bus.service park-ui.service
+# ⛔ NOT in the local stack's critical path (2026-09-16): with no AP in range this
+# unit can only waste time, yet it used to hold m4-load / core0-bus / park-ui
+# back for the whole DHCP retry budget - the user-visible symptom was "with WiFi
+# off the board hangs at the network step" (black panel for minutes). Only
+# park-clock is ordered after it: the clock is the one thing that genuinely needs
+# the link (it fetches an HTTP Date), and nothing waits for park-clock either.
+Before=park-clock.service
 
 [Service]
 Type=oneshot
@@ -19,7 +25,9 @@ RemainAfterExit=yes
 EnvironmentFile=-/etc/park-ui.env
 # ip/wpa_supplicant/udhcpc are resolved by absolute path inside the script.
 ExecStart=/bin/sh /opt/park_ui/tools/wifi_up.sh
-TimeoutStartSec=60
+# The script bounds itself (association gate + DHCP deadline); this is the belt
+# for a udhcpc that ignores its own -n/-t budget (the 2026-09-16 hang report).
+TimeoutStartSec=40
 StandardOutput=journal
 StandardError=journal
 
