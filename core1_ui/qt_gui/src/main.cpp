@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDateTime>
 #include <QFont>
 #include <QSslSocket>
 #include <QTimer>
@@ -12,6 +13,50 @@
 #include "mainwindow.h"
 #include "settingspage.h"
 #include "wifi_manager.h"
+
+/* ---- K210 console log -> journald + panel ticker (2026-09-16) --------------
+ * The board prints its boot progress AND its per-loop stats on the same console
+ * that carries the K2: preview stream.  Until now every non-K2 line was dropped
+ * in k210_link, so once the link moved from the CanMV IDE to the MP157 there was
+ * no way to see whether the K210 was still loading models, stuck on the SD card,
+ * or already dead - and the last [stat] before a crash was simply gone.
+ *
+ * Policy: journald gets everything (that is the forensic record, including the
+ * final line before a crash); the panel ticker only gets what a human standing
+ * at the gate cares about.  The high-rate lines (SD read heartbeats, [stat]
+ * every ~5 s, [RECOG] once per frame) are limited to one per kJ210BurstMs so
+ * neither surface turns into a blur.
+ */
+static const qint64 kJ210BurstMs = 5000;
+
+static bool k210LogIsBurst(const QString &l)
+{
+    return l.startsWith("SDX:") || l.startsWith("[stat]")
+        || l.startsWith("[RECOG]");
+}
+
+static bool k210LogIsPanelWorthy(const QString &l)
+{
+    /* [RECOG] joined this list on 2026-09-16 (user report: "the IDE recognises the
+     * plate, the panel shows nothing"): the recognition verdict is the one line an
+     * operator at the gate needs, and until now it only existed in journald.  It is
+     * a burst line (k210LogIsBurst), so the 5 s limiter keeps the ticker readable.
+     * [CFG] is the board's own build fingerprint (build id, ROI box, threshold, cap):
+     * it is how we tell which park_app.py is really flashed, without a serial console. */
+    static const char *kPrefixes[] = {"[BOOT]", "[MEM]", "[SD]", "SDX:",
+                                      "[KPU]", "[CAM]", "[DET]", "[GC]",
+                                      "[ROI]", "[RECOG]", "[CFG]"};
+    for (const char *p : kPrefixes)
+        if (l.startsWith(QLatin1String(p)))
+            return true;
+    static const char *kWords[] = {"fail", "error", "warn", "panic",
+                                   "traceback"};
+    const QString lower = l.toLower();
+    for (const char *w : kWords)
+        if (lower.contains(QLatin1String(w)))
+            return true;
+    return false;
+}
 
 int main(int argc, char *argv[])
 {
@@ -94,6 +139,23 @@ int main(int argc, char *argv[])
                      &win, &MainWindow::onRecogFailed);
     QObject::connect(&link, &K210Link::busyChanged,
                      &win, &MainWindow::onK210Busy);
+    /* The K210's own console log (everything that is not K2: protocol).  Journal
+     * it always - rate-limited only for the burst lines - and put the useful
+     * ones on the panel ticker, so "leave the IDE" no longer means "go blind". */
+    QObject::connect(&link, &K210Link::k210Log, &win,
+                     [&win](const QString &line) {
+        static qint64 lastBurst = 0;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool burst = k210LogIsBurst(line);
+        if (burst && now - lastBurst < kJ210BurstMs)
+            return;                       /* too soon: neither journal nor panel */
+        if (burst)
+            lastBurst = now;
+        qWarning("k210: %s", qPrintable(line));
+        if (!k210LogIsPanelWorthy(line))
+            return;                       /* journald only */
+        win.pushEvent(QStringLiteral("k210 ") + line);
+    });
     /* Core1 business write-end: K210 results -> shm, UI gate hotkeys -> pulse */
     QObject::connect(&link, &K210Link::recogResult,
                      &writer, &IpcWriter::onRecogResult);

@@ -51,6 +51,11 @@ signals:
     void snapshotCaptured(int sizeBytes);    /* 0x02 purpose=1 */
     /* 0x7E heartbeat payload bit0 (busy) edge-triggered notify */
     void busyChanged(bool busy);
+    /* K210 console log line (anything that is not part of the K2: protocol):
+     * [BOOT]/[MEM]/[SD]/[KPU]/[CAM]/[RECOG]/[stat].  Raw, untrusted, and the
+     * only way to see the board's boot progress once the link goes to the MP157
+     * instead of the CanMV IDE (2026-09-16). */
+    void k210Log(const QString &line);
 
 private:
     QThread m_thread;

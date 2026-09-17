@@ -125,6 +125,13 @@ signals:
     void recogFailed(const QString &reason);
     void snapshotCaptured(int sizeBytes);
     void busyChanged(bool busy);
+    /* One non-K2 line from the K210 console, i.e. its own log: [BOOT]/[MEM]/
+     * [SD]/[KPU]/[CAM]/[RECOG]/[stat].  Raw and untrusted (it is whatever the
+     * board printed), so the consumer journals and filters it.  Added 2026-09-16:
+     * these lines used to be dropped here, which is why "leave the IDE and you
+     * cannot see the boot progress" and "the last [stat] before a crash is gone"
+     * shared one root cause. */
+    void k210Log(const QString &line);
 
 private:
     void feed(const QByteArray &bytes);
@@ -144,6 +151,24 @@ private:
     QByteArray m_rxBuf;
     QMap<quint16, QByteArray> m_binChunks; /* seq -> payload chunk */
     quint8 m_busy = 0;
+
+    /* Hard caps on both re-assembly maps (2026-09-15).  They are cleared ONLY by the
+     * frame terminator, so a frame that never gets one (unplug, IDE interrupt, one
+     * lost line, a peer that restarts mid-frame) leaves its chunks parked here for
+     * ever.  The key spaces are not self-limiting either: a garbled "K2:IMG:" line
+     * yields an arbitrary offset, and the binary seq space is 65536 wide.  A real
+     * frame is ~15 chunks of 900 b64 chars, so both caps carry ~4x headroom.  On
+     * breach we drop the partial frame and resync: finishPreview()/publishJpeg()
+     * already refuse anything whose total length does not match, so a dropped
+     * partial can never be published as a corrupt image. */
+    static const int kMaxTextChunks = 64;
+    static const int kMaxTextChunkBytes = 8 * 1024;
+    static const int kMaxBinChunks = 256;
+    static const int kMaxBinChunkBytes = 4 * 1024;
+    /* A console log line is one board-side print; the longest one we emit is the
+     * kpu memory hint (~200 chars).  Truncate rather than trust: a desynced
+     * stream can hand us a very long "line" and it only has to reach the panel. */
+    static const int kMaxLogLineBytes = 512;
 
     /* --- decoded frame publish --- */
     QMutex m_mutex;
@@ -430,7 +455,13 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
             const int off = rest.left(colon).toInt(&okOff);
             const QByteArray b64 = rest.mid(colon + 1);
             if (okOff && !b64.isEmpty())
+            {
+                /* bound the partial frame (see kMaxTextChunks): clear and resync rather
+                 * than let a lost "K2:END:" strand chunks here for ever */
+                if (b64.size() > kMaxTextChunkBytes || m_chunks.size() >= kMaxTextChunks)
+                    m_chunks.clear();
                 m_chunks[off] = b64;
+            }
         }
         else if (line.startsWith("K2:END:"))
         {
@@ -463,6 +494,17 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
         else if (line.startsWith("K2:NG:"))
         { /* recognition failed (console uplink), 0xC3 semantics */
             emit recogFailed(line.mid(6).trimmed());
+        }
+        else if (!line.isEmpty() && !line.startsWith("K2:"))
+        {
+            /* Not part of the K2: protocol => it is the board's own console log
+             * (the boot lines, SD/model progress, and the per-2s [stat] line that
+             * is the only long-run evidence).  Forward it; the UI thread decides
+             * what to journal and what to show.  K2:-prefixed but unknown lines
+             * stay dropped: those are protocol noise, not log. */
+            if (line.size() > kMaxLogLineBytes)
+                line.truncate(kMaxLogLineBytes);
+            emit k210Log(QString::fromUtf8(line));
         }
     }
     if (m_lineBuf.size() > 64 * 1024)
@@ -528,6 +570,10 @@ void K210LinkWorker::processBinary(const QByteArray &body)
     switch (type)
     {
     case 0x01: /* preview JPEG chunk */
+        /* bound the partial frame (see kMaxBinChunks): clear and resync rather than
+         * let a lost 0x02 strand chunks here (the seq space is 65536 wide) */
+        if (payload.size() > kMaxBinChunkBytes || m_binChunks.size() >= kMaxBinChunks)
+            m_binChunks.clear();
         m_binChunks[seq] = payload;
         break;
     case 0x02:
@@ -624,6 +670,7 @@ K210Link::K210Link(QObject *parent)
             this, &K210Link::snapshotCaptured);
     connect(m_worker, &K210LinkWorker::busyChanged,
             this, &K210Link::busyChanged);
+    connect(m_worker, &K210LinkWorker::k210Log, this, &K210Link::k210Log);
 
     m_thread.setObjectName("k210_link");
     m_thread.start();

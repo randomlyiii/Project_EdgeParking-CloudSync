@@ -324,6 +324,71 @@ else:
     print("[FAIL] event ticker accepts unbounded lines")
     ok = False
 
+# 5b. a captured frame that never reaches Linux must be DROPPED, never buffered: the
+#     K210 re-assembly maps are cleared only by a frame terminator, so a peer dying
+#     mid-frame (unplug / IDE interrupt / one lost line) would strand chunks for ever.
+#     Neither key space is self-limiting - a garbled "K2:IMG:" offset is arbitrary and
+#     the binary seq space is 65536 wide - so both need a hard cap.
+_lk = (SRC / "k210_link.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["kMaxTextChunks", "kMaxTextChunkBytes",
+               "kMaxBinChunks", "kMaxBinChunkBytes"]:
+    if needle not in _lk:
+        print("[FAIL] k210_link: unbounded re-assembly buffer (%s missing)" % needle)
+        ok = False
+if "m_lineBuf.clear()" not in _lk:
+    print("[FAIL] k210_link: line buffer has no size cap")
+    ok = False
+# a partial frame must be dropped, not published: both publishers validate the length
+for needle in ["b64all.size() == want", "all.size() == int(total)"]:
+    if needle not in _lk:
+        print("[FAIL] k210_link: dropped partial could be published (%s)" % needle)
+        ok = False
+print("[pass] K210 partial frames are bounded, dropped and never published")
+
+# 5c. the K210's own console log must reach the operator (2026-09-16 user report
+#     "leave the IDE and you cannot tell where the boot got to"): every non-K2
+#     line used to be dropped in feedText(), which also threw away the last
+#     [stat] line before a long-run crash.  It must be forwarded, journaled, and
+#     filtered before it hits the panel - and it must NOT be mistaken for image
+#     data (the else branch cannot touch the re-assembly map or publish).
+_lk_body = body(_lk, "void K210LinkWorker::feedText(")
+if "emit k210Log(" not in _lk_body:
+    print("[FAIL] k210_link: non-K2 console lines are still dropped")
+    ok = False
+if "publishJpeg" in _lk_body.split("else if (!line.isEmpty()")[-1]:
+    print("[FAIL] k210_link: a console log line can reach the frame publisher")
+    ok = False
+if "kMaxLogLineBytes" not in _lk:
+    print("[FAIL] k210_link: forwarded log lines are unbounded")
+    ok = False
+_hk = (SRC / "k210_link.h").read_text(encoding="utf-8", errors="replace")
+if "void k210Log(const QString &line);" not in _hk:
+    print("[FAIL] k210_link.h does not expose k210Log")
+    ok = False
+if "&K210LinkWorker::k210Log, this, &K210Link::k210Log" not in _lk:
+    print("[FAIL] k210_link.cpp does not forward the worker's k210Log")
+    ok = False
+_mj = (SRC / "main.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["&K210Link::k210Log", 'qWarning("k210: %s"',
+               'pushEvent(QStringLiteral("k210 ")', "kJ210BurstMs",
+               "k210LogIsBurst"]:
+    if needle not in _mj:
+        print("[FAIL] main.cpp does not surface the K210 log (%s)" % needle)
+        ok = False
+print("[pass] the K210 console log reaches journald + the panel ticker")
+
+# 5d. the recognition verdict AND the board's build fingerprint must be on the PANEL,
+#     not journald-only (2026-09-16 user report: the IDE shows the plate, the board shows
+#     nothing - the operator at the gate cannot read journald).  [CFG] is what proves
+#     WHICH park_app.py is flashed; both are burst-limited / once-per-boot.
+_panel = body(_mj, "static bool k210LogIsPanelWorthy(")
+for _needle in ('"[RECOG]"', '"[CFG]"'):
+    if _needle not in _panel:
+        print("[FAIL] main.cpp keeps %s off the panel (journald only)" % _needle)
+        ok = False
+print("[pass] the recognition verdict ([RECOG]) and the build fingerprint ([CFG])"
+      " reach the panel")
+
 # 6. the board has no pgrep/pkill/timeout: board-side scripts must not use them
 #    (match command-looking text only, so the explanatory comments are fine)
 for f in ["wifi_manager.cpp", "settingspage.cpp"]:
@@ -476,9 +541,14 @@ print("[pass] .gitignore covers every live runtime config")
 # 9. boot chain: this board's only link is WiFi and the vendor desktop service
 #    that used to raise wlan0 is disabled on purpose - so wifi-up.service must
 #    exist, must run the vendor's three steps, must avoid the procps tools this
-#    rootfs does not have, and must be ordered before park-clock/park-ui.
+#    rootfs does not have, and must bound itself.
 #    (2026-09-11 user bug: after every power cycle the three commands had to be
 #    typed by hand; a link with no lease then looked like a cloud failure.)
+#    (2026-09-16 user bug: "with WiFi off the board hangs at the network step" -
+#    the unit sat in front of the whole local stack AND ran its DHCP retries even
+#    with nothing to associate with. So now: an association gate + a wall-clock
+#    DHCP deadline inside the script, and NO dependency edge that puts
+#    m4-load/core0-bus/park-ui behind the network.)
 DEPLOY = REPO / "deploy/systemd"
 wifi_sh = DEPLOY / "wifi_up.sh"
 wifi_svc = DEPLOY / "wifi-up.service"
@@ -492,7 +562,8 @@ if wifi_sh.exists():
         print("[FAIL] wifi_up.sh is not pure ASCII")
         ok = False
     for needle in ["link set", "-B -D nl80211", "udhcpc", "PARK_UI_WIFI",
-                   "PARK_WPA_CONF", "/proc/[0-9]*", "grep -q 'inet '"]:
+                   "PARK_WPA_CONF", "/proc/[0-9]*", "grep -q 'inet '",
+                   "wpa_state=", "not associated", "DEADLINE"]:
         if needle not in t:
             print("[FAIL] wifi_up.sh misses '%s'" % needle)
             ok = False
@@ -511,18 +582,49 @@ if wifi_svc.exists():
         if needle not in t:
             print("[FAIL] wifi-up.service misses '%s'" % needle)
             ok = False
-for unit in ["park-ui.service", "park-clock.service"]:
+# The clock needs the link; the local stack must NOT. Only real dependency
+# directives count - the units also *explain* the rule in comments, and a naive
+# substring check would fail on its own documentation.
+def _deps(text):
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        if s.split("=", 1)[0].strip() in ("After", "Before", "Wants", "Requires",
+                                          "BindsTo", "PartOf"):
+            out.append(s)
+    return out
+
+
+_t = (DEPLOY / "park-clock.service").read_text(encoding="utf-8", errors="replace")
+if not any("wifi-up.service" in d for d in _deps(_t)):
+    print("[FAIL] park-clock.service does not order itself against wifi-up")
+    ok = False
+for unit in ["m4-load.service", "core0-bus.service", "park-ui.service"]:
     t = (DEPLOY / unit).read_text(encoding="utf-8", errors="replace")
-    if "wifi-up.service" not in t:
-        print("[FAIL] %s does not order itself against wifi-up.service" % unit)
+    if any("wifi-up.service" in d for d in _deps(t)):
+        print("[FAIL] %s waits for wifi-up (a missing AP would delay it)" % unit)
         ok = False
+for f in ["wifi-up.service", "park-clock.service"]:
+    t = (DEPLOY / f).read_text(encoding="utf-8", errors="replace")
+    for d in _deps(t):
+        if d.startswith("Before=") and any(
+                unit in d for unit in ["m4-load.service", "core0-bus.service",
+                                       "park-ui.service"]):
+            print("[FAIL] %s puts the local stack behind the network (%s)" % (f, d))
+            ok = False
+if "has_ipv4_lease" not in (DEPLOY / "set_clock.py").read_text(
+        encoding="utf-8", errors="replace"):
+    print("[FAIL] set_clock.py retries without checking for a lease")
+    ok = False
 ia = (DEPLOY / "install_all.sh").read_text(encoding="utf-8", errors="replace")
 for needle in ["wifi_up.sh", "wifi-up.service",
                "systemctl enable wifi-up.service"]:
     if needle not in ia:
         print("[FAIL] install_all.sh misses '%s'" % needle)
         ok = False
-print("[pass] WiFi is raised at boot (wifi-up.service + vendor recipe)")
+print("[pass] WiFi is raised at boot, bounded, and off the local stack's path")
 
 # 9b. a dead link must be reported as "no network", not as a broken transport:
 #     the wrong wording sends the next debugging session into the wrong layer.
