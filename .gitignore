@@ -17,7 +17,8 @@ build/
 *.ioc.bak
 
 # others
-code.txt
+**/README.md
+*.txt
 error.txt
 key.txt
 
