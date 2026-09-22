@@ -85,14 +85,20 @@ check("ADS[24..29] are 0..5", m.ADS[24:30], ["0", "1", "2", "3", "4", "5"])
 
 
 # ---- 2. fake KPU + fake image ----
-def make_rows(prov_idx, char_idxs, nrows):
+# NOTE 2026-09-18: `lp_recog()` returns LOGITS (raw scores, ~0..10 when confident,
+# ~0 when clueless), and main.py normalises them with a per-char sigmoid.  The old
+# fixture magnitude (0.95/0.5) was unrealistically small: sigmoid(0.5)=0.62 already
+# looks "sure", so a weak box sailed past RECOG_CONF_TH=0.6 and broke the
+# "higher-conf box wins" ordering.  Realistic magnitudes: confident row = 10.0,
+# background = 0.01, filler row (model has no idea) = 0.5 per class.
+def make_rows(prov_idx, char_idxs, nrows, conf=10.0):
     rows = []
     r0 = [0.01] * len(m.PROVINCES)
-    r0[prov_idx] = 0.97
+    r0[prov_idx] = conf
     rows.append(r0)
     for i in char_idxs:
         r = [0.01] * len(m.ADS)
-        r[i] = 0.95
+        r[i] = conf
         rows.append(r)
     while len(rows) < nrows:
         rows.append([0.5] * len(m.ADS))
@@ -223,7 +229,7 @@ m.DRAW_DETECT = 1
 low = make_rows(12, [0, 32, 32, 32, 32, 32], 8)
 for r in low:
     for j in range(len(r)):
-        r[j] *= 0.5
+        r[j] *= 0.01            # logits~0.1: below RECOG_CONF_TH, must NOT break the loop
 m.INFER_MODE = "A"
 m._KPU_LOADED = True
 m._KPU_DET = FakeDet([(10, 10, 100, 30), (50, 50, 120, 40)])
@@ -241,7 +247,7 @@ check("no box -> det 0", res["det"], 0)
 lowrows = make_rows(19, CHAR_YUE_B12345, 8)
 for r in lowrows:
     for j in range(len(r)):
-        r[j] *= 0.3
+        r[j] *= 0.01            # sigmoid(0.1)=0.525 < th=0.6 -> stays no_plate
 m._KPU_DET = FakeDet([(10, 10, 100, 30)])
 m._KPU_RECOG = FakeRecog(lowrows)
 res = m.recognize_frame(FakeImg())

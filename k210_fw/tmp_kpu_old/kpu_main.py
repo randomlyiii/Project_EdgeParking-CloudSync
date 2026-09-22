@@ -10,6 +10,7 @@ main + 内联的 SPI-FAT 驱动），堆健康时直接存成 `/flash/main.py` �
 """
 import gc
 import json
+import math            # 识别置信度 sigmoid 归一化用（logits → 0..1）
 import machine          # 内联的 SPI-FAT 驱动要用 machine.SPI（别删！）
 import sys
 import uos              # 内联驱动用 uos.ENOENT 等常量（别删！）
@@ -1186,14 +1187,15 @@ KPU_DET_NMS = 0.3
 KPU_DET_LAYER_W, KPU_DET_LAYER_H = 20, 15
 KPU_DET_EXTEND = 0.08      # 车牌框外扩比例（切图前，参考例程）
 RECOG_W, RECOG_H = 208, 64 # 识别模型输入尺寸
-RECOG_HMIRROR = True       # 切图先水平镜像再送识别（参考例程；若字符反了改 False）
+RECOG_HMIRROR = False      # 切图不再镜像：capture_frame() 已用 CAM_SW_HMIRROR 修过方向，
+                           # 这里再 mirror 一次 = 双重镜像 = 模型看到反字（2026-09-18 修）
 
 # 构建指纹（每改一次板端代码就 +1；`[CFG]` 开机行会打出来）。
 # 为什么必须有它（2026-09-16 真机教训）：设备上 `/flash/park_app.py` 与我们仓库这份
 # **可以不是同一个文件**——同一天的日志里，板上 ROI 算出 (15,71,288,95)，而仓库常数
 # 算出来是 (16,72,288,96)，可是屏幕和日志里没有任何东西能证明"现在跑的是哪一版"，
 # 于是"我明明保存了"只能靠猜。改完就改这个字符串：日志里对不上 = 没存进去。
-BUILD = "2026-09-16b"
+BUILD = "2026-09-18-fixhmirror"
 
 # ⛔ `cut()` 的单块像素上限。**0 = 关，而且默认必须是 0**（2026-09-16 教训，我犯的）：
 # 我一度默认打开它，把框缩成"居中的 200x66"再送模型 —— 而 **09-15 单文件 main.py**
@@ -2289,9 +2291,21 @@ def recognize_frame(img):
             ascii_plate = PROVINCES[idx[0]] + ''.join(chars[:6])
             zh = PROVINCE_ZH.get(PROVINCES[idx[0]], PROVINCES[idx[0]])
             plate = zh + ''.join(chars[:6])
-            conf = sum(max(row) for row in out) / len(out)
+            # ⭐ 2026-09-18：`lp_recog()` 返回的是 **logits**（原始分数，可负可正），
+            # 原代码 `sum(max(row))/len(out)` 直接当概率 -> 正常输入 conf≈5~20，
+            # 输入偏离训练分布（镜像/模糊/比例不对）时 logits 全负 -> conf 为负值。
+            # 改成 per-char sigmoid 平均（0..1），th=0.6 才有意义；
+            # 原始 logits 均值 `raw` 保留作**诊断**（raw>3=模型很确信，raw<0=输入
+            # 偏离训练分布 -> 查镜像/ROI/朝向，而不是调阈值）。
+            raws = [max(row) for row in out]
+            raw = sum(raws) / len(raws)
+            conf = 0.0
+            for m in raws:
+                m = max(-30.0, min(30.0, m))   # 防 exp 溢出
+                conf += 1.0 / (1.0 + math.exp(-m))
+            conf /= len(raws)
             if best is None or conf > best[0]:
-                best = (conf, plate, ascii_plate)
+                best = (conf, plate, ascii_plate, raw)
             if conf >= RECOG_CONF_TH:
                 break      # 命中即出（框按置信排序）
         except Exception as e:
@@ -2325,7 +2339,8 @@ def recognize_frame(img):
             "det": len(lps), "ms": ms, "boxes": boxes,
             "best": best[1] if best else None,
             "best_ascii": best[2] if best else None,
-            "best_conf": round(best[0], 3) if best else None}
+            "best_conf": round(best[0], 3) if best else None,
+            "raw_conf": round(best[3], 3) if best else None}
 
 
 def recognize(jpeg):
@@ -2511,9 +2526,9 @@ class App:
                 if result.get("kpu_err"):
                     extra = " [" + result["kpu_err"] + "]"
                 elif result.get("best_conf") is not None:
-                    extra = (" best=%s conf=%s th=%s"
+                    extra = (" best=%s conf=%s th=%s raw=%s"
                              % (result.get("best"), result.get("best_conf"),
-                                RECOG_CONF_TH))
+                                RECOG_CONF_TH, result.get("raw_conf")))
                 elif result.get("error") == "no_plate":
                     extra = " (model gave no usable output)"
             # cropfail = 连"把图切出来"都没成功的次数（成功即归零）。它 >0 时下面那句
