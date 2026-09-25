@@ -7,6 +7,7 @@
 - 100ASK-MP157（STM32MP157DACx）+ 外接 K210 的停车场**端侧AI·边云协同**Demo，Linux(双A7 SMP)+FreeRTOS(M4)，M4 跑 OpenAMP/RPMSG。
 - `README.md`=项目定位/分工一览/硬件清单/目录树/构建；`Task.md`=系统架构/任务拆解/数据交互/约束/KPI（内容隔离，勿重复）。
 - 字段级协议（A7↔M4 帧、A7↔K210 串口、CAN 帧、共享结构体）统一归 `docs/protocols.md`（**2026-09-07 已建**：CAN §1 / K210 UART §2 / RPMSG §3 已拷入，其余通道随实现拷入；草案母本 `PhaseMd/10_协议规格总表`，改协议先改母本→同步本文件→改代码→两处变更记录）。
+- `MD文档/rk3588/调试记录.md`（2026-09-25 建）= **RK3588（定昌 DC-A588）**调通记录（镜像结构/踩坑/烧录/外设体检），AGENTS 只留结论见 §九。
 - `PhaseMd/`（2026-09-06 建）= **执行层任务分解，15 份 md**，按用户定稿的 8 步串行主线组织：①下位机C8T6本地 → ②M4↔下位机CAN → ③Linux↔M4 RPMSG → ④Linux本地业务 → ⑤K210↔Linux → ⑥本地业务联通 → ⑦Linux↔云端 → ⑧全业务跑通；另有第0步环境 + 支撑文档（协议总表/Qt规格/KPI用例/排障手册）+ **14_GitHub现成项目调研**（2026-09-09 建，剩余功能↔现成开源项目映射）。任务编号 `P<步>-<序号>`，每步有验收门 G0~G8；进度推进时同步勾选并更新本文件。
 
 ## 二、当前确定架构（重要，含最新变更）
@@ -117,3 +118,11 @@
 - **📺 K210 日志上 LCD（2026-09-16，用户要求）**：日志**本来就在 `/dev/ttyACM0` 上**——是 `k210_link.cpp` 的 `feedText()` 只认 `K2:` 行，把 `[BOOT]`/`[MEM]`/`[SD]`/`[KPU]`/`[RECOG]`/`[stat]` 全丢了（"离开 IDE 看不到启动进度"与"死机前最后一行看不到"是同一根因）。现：`feedText()` 加 else → `emit k210Log` → `main.cpp` `qWarning("k210: …")` 进 journald + **筛选后** `pushEvent` 上底栏事件条（`[BOOT]/[MEM]/[SD]/SDX:/[KPU]/[CAM]/[DET]/[GC]/[ROI]` 及含 fail/error/warn 的行）；高频行（`SDX:`/`[stat]`/`[RECOG]`）**限流 5s**，`[RECOG]` **09-16 晚起也上事件条**；只读实时流（开机最初几秒不等）。**改完须 book 上 `sh tools/build_arm.sh` 重编**；门禁 = §5c。
 - **📍 云代码位置澄清（2026-09-11 用户问"core0_service/cloud 下没有代码"）**：**唯一云代码在 `core1_ui/qt_gui/src/`**——`cloud_client.{h,cpp}`（Qt Network + python3 回退传输、超时/重试/容错解析/错误分类）、`cloud_settings.{h,cpp}`（`/etc/park/cloud.conf` + 每厂商 key），装配在 `main.cpp`，UI 在 `settingspage.*`/`mainwindow.*`，模板 `deploy/sample_cloud.conf`，测试工具 `云端API调用测试参考/cloud_api_test.py`。**已 `git rm` 两个空占位目录** `core0_service/cloud/.gitkeep` 与 `core1_ui/cloud_api/.gitkeep`（Core0 禁云、原独立 cloud_api 方案作废，只剩 `.gitkeep` 会误导人去找代码）；`README.md` 目录树按实际结构重写，`Task.md`/本地 spec 里 `cloud_api` 字样改为"云端模块（park_ui 内的 cloud_*）"，`check_static.py` 第 9c 节起负向断言（这两个目录再出现即 FAIL）。
 - **📦 09-11 晚三项已归档**（LCD `联网` 按钮 / 时钟加固 / 云错误诊断 / 诊断页改时间 / 网络页签 `保存`）原文在 `docs/AGENTS_history.md` §第7步-2026-09-11。**要点**：`联网`=只动链路不写文件；`保存`=只写 `/etc/wpa_supplicant.conf`（`.bak` 只生成一次）；`连接`=写+应用+20s 无租约回滚；诊断页 `同步`/`改时间`（严格正则后 argv 调 `/bin/date -u -s`）；云失败分类 `no network`/`certificate` + `body…: 片段`；门禁 9d~9h。
+
+## 九、RK3588（定昌 DC-A588）板级事实（2026-09-25 调通；详录 `MD文档/rk3588/调试记录.md`）
+- **板子**：定昌 **DC-A588**（=飞牛 NAS 同款底板），RK3588 八核 / 8G RAM / **64G eMMC** / 双千兆网口（eth0/eth1）。原厂固件 = GB-RK3588 Ubuntu 24.04 GNOME（5.10.198 vendor 内核）。USB 口分工：**仅 Type-C 口**（otg 控制器 dr_mode=otg）支持设备模式跑 adb；**USB-A 口全部 host-only**（dtb 焊死），且其中一口兼 **MASKROM 救砖口**——A对A 线接上电即进 maskrom，**勿当调试口**。
+- **在板固件** = 原厂 + 仅两处修复：① `/etc/init.d/.usb_config` 带前导空格致 `case` 永不命中 → 改精确 `usb_adb_en`（上电自启 adbd）② `/etc/rc.local` `echo host`→`peripheral`（锁死 OTG 设备模式，防开机末段顶掉 gadget）。烧后已配：root 密码 **rk3588**、netplan `192.168.10.2/24` 静态 + `dhcp4` 双配置（持久化）。镜像文件 `D:\BaiduNetdiskDownload\GB-RK3588-gnome-minimal-adb-on.img`。
+- **调试通道**（两条均真机验证）：① `adb shell` = A对C 线插板子 Type-C 口，**直接 root**；② `ssh root@192.168.10.2` = 网线直连 PC/笔记本（PC 侧设 `192.168.10.1/24`，**网关/DNS 留空**），插路由器则自动 DHCP 拿第二地址。
+- **⭐ 烧录（绕开摘要校验）**：SoCToolKit v2.96"升级固件"模式对**改过字节的固件一律报"固件摘要检查失败"**（无厂商私钥不可重签）；正解 = MarkToolbox 自带经典工具 `C:\ProgramData\MarkToolbox\bin\upgrade_tool.exe`——板子进 MASKROM 后 `upgrade_tool.exe UF <img>`，**不校验摘要，14GB 约 6.5 分钟写完自动重启**。注意：镜像须 **512 字节对齐**（零填充补齐）；进 MASKROM = 救砖 USB-A 口 + A对A 线接 PC 上电，或 MASKROM 键。镜像结构：RKFW 容器 + 内嵌 RKAF 包（`0x77226`，文件表每项 0x70B）+ **整个文件即 ext4**（起点 `0x43B4226`=70992422，非 512 对齐）；离线改文件用 `debugfs`（loop 挂载 /mnt/d 会被 9P 强制只读）。
+- **外设体检（全正常，43°C）**：GPU Mali 1GHz / **NPU RKNPU v0.9.8 1GHz（设备节点 = `/dev/dri/card1`+`renderD129`，新版驱动走 DRM，无 `/dev/rknpu` 属正常）** / WiFi 博通 bcmdhd / 蓝牙 hci0 / USB / HDMI×2 / 音频×4（HDMI×2+HDMI-in+ES8388）/ RTC / CAN / PWM。缺 **librknnrt**（跑 NPU 推理前需装 RKNN Runtime）。
+- **踩坑速记**：`chpasswd` 设 <8 位密码被 pwquality 拒 → 用 `usermod -p '<sha512哈希>' root`；最小改动版固件**未**含实验阶段注入的密码/密钥（原厂 root 密码未知，烧后必改）；A对A 线掉 maskrom 是救砖口设计行为不是故障。
