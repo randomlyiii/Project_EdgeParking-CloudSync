@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QTimer>
 
+#include "cloud_settings.h"
 #include "park_shm.h"
 
 class IpcWriter : public QObject
@@ -32,6 +33,9 @@ public:
     void start();                       /* attach /park_shm, then arm timers */
     void stop();                        /* stop timers + munmap */
     bool isAttached() const { return m_shm != nullptr; }
+    /* cloud fallback master switch (cloud.conf enabled=); pointer owned by
+     * main() and valid for the app lifetime. nullptr = enabled (safe). */
+    void setCloudSettings(const CloudSettings *s) { m_cset = s; }
 
 public slots:
     /* K210 recognition result (source is always 0 = edge from K210) */
@@ -61,11 +65,13 @@ private slots:
 
 private:
     bool attachShm();
+    bool cloudEnabled() const { return !m_cset || m_cset->enabled; }
     void publishResult(const QString &plate, double confidence, int source);
     void publishEvtC1(uint8_t code);
     void consumeEvtC0(uint8_t bits);
 
     park_shm_t *m_shm = nullptr;        /* MAP_SHARED, null until attach ok */
+    const CloudSettings *m_cset = nullptr;
     QTimer m_hbTimer;
     QTimer m_evtTimer;
     uint32_t m_lastSeqC0 = 0;

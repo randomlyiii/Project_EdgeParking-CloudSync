@@ -104,6 +104,7 @@ private:
     QCheckBox *m_ckInsecure = nullptr;
     QCheckBox *m_ckFake = nullptr;
     QCheckBox *m_ckOutage = nullptr;
+    QCheckBox *m_ckEnabled = nullptr;   /* cloud fallback master switch */
 
     /* wifi tab */
     QLabel *m_lblWifi = nullptr;

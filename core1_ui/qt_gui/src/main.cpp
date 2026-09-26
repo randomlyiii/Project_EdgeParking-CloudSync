@@ -232,6 +232,11 @@ int main(int argc, char *argv[])
     if (!cloud_settings_has_key(cset))
         qWarning("cloud: no API key - set it on the LCD settings page "
                  "($PARK_CLOUD_CONF=%s)", qPrintable(cloud_settings_path()));
+    /* IpcWriter started earlier; hand it the config pointer now (main-owned,
+     * valid for the app lifetime) so enabled=0 can gate the failure path. */
+    writer.setCloudSettings(&cset);
+    if (!cset.enabled)
+        qWarning("cloud: fallback DISABLED (enabled=0) - edge-only mode");
     /* Decisive TLS diagnostic: this rootfs ships libssl.so.1.1 but no CA
      * bundle, so both "does Qt have TLS at all" and the CA lookup are worth
      * logging once at startup. */

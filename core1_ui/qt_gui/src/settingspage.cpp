@@ -52,6 +52,7 @@
 #define TXT_FAKE      "\xE5\x81\x87\xE7\xBB\x93\xE6\x9E\x9C\xE6\xBC\x94" \
                       "\xE7\xA4\xBA"                                     /* fake demo */
 #define TXT_OUTAGE    "\xE6\x96\xAD\xE7\xBD\x91\xE6\xBC\x94\xE7\xBB\x83" /* outage    */
+#define TXT_ENABLED   "\xE4\xBA\x91\xE7\xAB\xAF\xE4\xBD\xBF\xE8\x83\xBD" /* cloud on  */
 #define TXT_REFRESH   "\xE5\x88\xB7\xE6\x96\xB0"                         /* shua xin  */
 #define TXT_NETUP     "\xE8\x81\x94\xE7\xBD\x91"                         /* lian wang  */
 #define TXT_TIME      "\xE6\x97\xB6\xE9\x97\xB4"                         /* shi jian   */
@@ -242,9 +243,10 @@ QWidget *SettingsPage::buildCloudTab()
     m_ckInsecure = new QCheckBox(QString::fromUtf8(TXT_INSECURE), w);
     m_ckFake = new QCheckBox(QString::fromUtf8(TXT_FAKE), w);
     m_ckOutage = new QCheckBox(QString::fromUtf8(TXT_OUTAGE), w);
-    QCheckBox *boxes[5] = { m_ckAuto, m_ckWriteback, m_ckInsecure, m_ckFake,
-                            m_ckOutage };
-    for (int i = 0; i < 5; ++i) {
+    m_ckEnabled = new QCheckBox(QString::fromUtf8(TXT_ENABLED), w);
+    QCheckBox *boxes[6] = { m_ckAuto, m_ckWriteback, m_ckInsecure, m_ckFake,
+                            m_ckOutage, m_ckEnabled };
+    for (int i = 0; i < 6; ++i) {
         boxes[i]->setStyleSheet(QStringLiteral(
             "QCheckBox{color:#cfd8dc;font-size:17px;spacing:8px;}"));
         tog->addWidget(boxes[i]);
@@ -465,10 +467,12 @@ void SettingsPage::applyToUi()
         QSignalBlocker b3(m_ckInsecure);
         QSignalBlocker b4(m_ckFake);
         QSignalBlocker b5(m_ckOutage);
+        QSignalBlocker b6(m_ckEnabled);
         m_ckAuto->setChecked(m_s->autoFallback);
         m_ckWriteback->setChecked(m_s->writeback);
         m_ckInsecure->setChecked(m_s->insecureTls);
         m_ckFake->setChecked(m_s->fakeResult);
+        m_ckEnabled->setChecked(m_s->enabled);
         if (m_ckOutage != nullptr && m_cloud != nullptr)
             m_ckOutage->setChecked(m_cloud->outageSimulation());
     }
@@ -627,6 +631,7 @@ void SettingsPage::onToggleChanged()
     m_s->writeback = m_ckWriteback->isChecked();
     m_s->insecureTls = m_ckInsecure->isChecked();
     m_s->fakeResult = m_ckFake->isChecked();
+    m_s->enabled = m_ckEnabled->isChecked();
     if (m_cloud != nullptr) {
         m_cloud->setOutageSimulation(m_ckOutage->isChecked());
         m_cloud->setSettings(*m_s);

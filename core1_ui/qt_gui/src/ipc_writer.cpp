@@ -139,6 +139,13 @@ void IpcWriter::onRecogResult(const QString &plate, double confidence,
     if (double(confidence) >= double(thr)) {
         publishResult(plate, confidence, 0);   /* high confidence: edge, src=0 */
         /* cloud_pending stays 0 */
+    } else if (!cloudEnabled()) {
+        /* enabled=0: low-confidence results are dropped silently, no cloud
+         * is ever requested (2026-09-27 - no threshold can express this) */
+        emit eventMessage(QStringLiteral(
+            "ipc-writer: low confidence %1 < %2, cloud disabled (enabled=0)")
+                              .arg(confidence, 0, 'f', 2)
+                              .arg(thr, 0, 'f', 2));
     } else {
         m_shm->cloud_pending = 1;              /* low confidence -> cloud */
         emit cloudPendingChanged(true);
@@ -168,6 +175,15 @@ void IpcWriter::clearCloudPending()
 
 void IpcWriter::onRecogFailed(const QString &reason)
 {
+    if (!cloudEnabled()) {
+        /* enabled=0: failures just surface as an event; cloud_pending is
+         * NOT raised, so Core0 never extends the recognition timeout and
+         * no cloud request is ever made */
+        emit eventMessage(QStringLiteral(
+            "ipc-writer: recog failed, cloud disabled (enabled=0): %1")
+                              .arg(reason));
+        return;
+    }
     if (!m_shm && !attachShm()) {
         emit eventMessage(QStringLiteral(
             "ipc-writer: /park_shm not attached, failure dropped"));

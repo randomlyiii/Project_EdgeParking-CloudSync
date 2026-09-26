@@ -145,6 +145,7 @@ bool cloud_settings_load(CloudSettings *out, QString *warn, const QString &path)
         else if (k == QLatin1String("prompt"))         out->prompt = v;
         else if (k == QLatin1String("trigger_conf"))   out->triggerConf = v.toDouble();
         else if (k == QLatin1String("accept_conf"))    out->acceptConf = v.toDouble();
+        else if (k == QLatin1String("enabled"))        out->enabled = toBool(v, out->enabled);
         else if (k == QLatin1String("timeout_ms"))     out->timeoutMs = v.toInt();
         else if (k == QLatin1String("retry"))          out->retry = v.toInt();
         else if (k == QLatin1String("ca_file"))        out->caFile = v;
@@ -227,6 +228,7 @@ bool cloud_settings_save(const CloudSettings &s, const QString &path)
     ts << "prompt=" << s.prompt << "\n";
     ts << "trigger_conf=" << QString::number(s.triggerConf, 'f', 2) << "\n";
     ts << "accept_conf=" << QString::number(s.acceptConf, 'f', 2) << "\n";
+    ts << "enabled=" << (s.enabled ? 1 : 0) << "\n";
     ts << "timeout_ms=" << s.timeoutMs << "\n";
     ts << "retry=" << s.retry << "\n";
     ts << "ca_file=" << s.caFile << "\n";

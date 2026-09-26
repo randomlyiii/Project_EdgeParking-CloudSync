@@ -35,6 +35,11 @@ struct CloudSettings {
     QString prompt;       /* instruction sent together with the image */
     double  triggerConf;  /* call the cloud when edge confidence < this */
     double  acceptConf;   /* accept a cloud result when confidence >= this */
+    bool    enabled = true; /* cloud fallback master switch (2026-09-27):
+                             * false = never raise cloud_pending / never
+                             * request the cloud - the K2:NG failure path is
+                             * gated too, which no threshold can do (the
+                             * thresholds only shape the RESULT path). */
     int     timeoutMs;    /* single request timeout (spec: 5000) */
     int     retry;        /* extra attempts after the first (spec: <= 1) */
     QString caFile;       /* TLS CA bundle; "" = auto-detect. The board rootfs
