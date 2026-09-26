@@ -1,95 +1,95 @@
-# 端侧 AI · 边云协同停车场（100ASK-MP157 + K210）
+# 端侧 AI · 边云协同停车场（100ASK-MP157 + RK3588 + K210）
 
-> 定位：基于 100ASK-MP157（STM32MP157：双核 Cortex-A7 + 单核 Cortex-M4）+ **外接 K210 AI 视觉模块**的停车场**端侧 AI + 边云协同**教学 Demo。
-> 双系统：双 A7 运行同一 Linux（SMP），M4 运行 FreeRTOS；K210 运行独立固件（自带摄像头 + KPU）。
+> 定位：基于 100ASK-MP157（STM32MP157：双核 Cortex-A7 + 单核 Cortex-M4）+ **RK3588（定昌 DC-A588，NPU 边缘识别节点）** + **外接 K210 摄像头模块**的停车场**端侧 AI + 边云协同**学习 Demo。
+> 双系统：双 A7 运行同一 Linux（SMP），M4 运行 FreeRTOS；K210 运行 CanMV 固件（纯图像采集）；RK3588 运行 Ubuntu（LPRNet NPU 识别）。
 > 边云协同两种形态：识别置信度不足时调 **DeepSeek Vision API** 兜底（实时）；云平台数据上报为**阶段 4 可选**。
 
 ## 分工一览
 
 | 单元 | 系统 | 一句话职责 |
 |---|---|---|
-| M4 @209MHz | FreeRTOS | 纯硬件实时层：红外车辆到位检测、CAN 道闸、IO / 故障检测；仅经 RPMSG 与 A7 通信 |
-| A7-0 | Linux | 实时业务底座：RPMSG、停车场业务逻辑、（可选）轻量记录、（可选）云平台上报 |
-| A7-1 | Linux | 多媒体 / 图形 / AI 协处理器管理：Qt5 LCD 界面、K210 模块（UART 预览流 + 车牌结果）、DeepSeek 兜底 |
-| K210 | CanMV MicroPython 固件 | 自带摄像头：JPEG 预览流**常开**（与推理解耦）+ 指令触发的 KPU 车牌识别（低置信云兜底） |
+| M4 @209MHz | FreeRTOS | 纯硬件实时层：CAN 道闸、C8T6 节点管理；仅经 RPMSG 与 A7 通信 |
+| C8T6 | FreeRTOS | 下位机节点：BH1750 遮光检测（车到位）、SG90 道闸、OLED；CAN 2.0 500k 挂 M4 |
+| A7-0 | Linux | 实时业务底座：RPMSG、停车场业务逻辑、白名单、（可选）轻量记录 |
+| A7-1 | Linux | 图形 / 云端：Qt5 LCD 界面（park_ui）、K210 上行流消费、DeepSeek 兜底 |
+| K210 | CanMV MicroPython 固件 | **纯图像采集上行**（相机→JPEG→`K2:IMG/END` 行流）；物理上插 **RK3588** USB |
+| RK3588 | Ubuntu 24.04 | **车牌识别主责**：K210 行流接收 + LPRNet（RKNPU 2.5ms/帧）+ TCP :8089 中继回 MP157；HTTP 测试台 :8088 |
 
-> 注意：A7-0 / A7-1 是**同一个 Linux 内核下的两个 CPU**，"核隔离"靠内核隔离配置 + 进程 CPU 亲和性实现，不是物理分系统。。
-> 注意：K210 是**多媒体外设**（自带固件与 AI），归 A7-1 直接管理；M4 只保留红外 / CAN / IO 等毫秒级硬实时器件，不做视频中转。
+> 数据流：K210 →(USB CDC)→ **RK3588 edge_hub** →(以太网 TCP 行流：预览帧 + `K2:OK/NG` 结果 + 日志)→ MP157 park_ui →(shm)→ core0 →(RPMSG/CAN)→ 道闸。
+> 注意：A7-0 / A7-1 是**同一个 Linux 内核下的两个 CPU**，"核隔离"靠内核隔离配置 + 进程 CPU 亲和性实现，不是物理分系统。
+> 网络：MP157 云端链路 = 板载 WiFi（唯一）；MP157↔RK3588 = 以太网直连（eth0 192.168.10.1/24 ↔ 192.168.10.2/24，主机名 `rk3588`），两条链路互不相干。
 
 ## 技术栈
 
-- C（core0_service / m4_fw）、C++ Qt5（core1_ui 界面）、K210 固件（CanMV MicroPython，CanMV IDE 开发）
-- KPU 车牌识别模型（K210 片内推理，替代原 A7 本地 TFLite）
-- DeepSeek Vision API（兜底二次识别，HTTPS / libcurl）
-- FreeRTOS + OpenAMP RPMSG（M4↔A7）、UART（A7↔K210，预留 SPI 升级）
-- 本地记录（轻量文本文件 `events.log`/`gate_log`，可选默认关；不上数据库）
-- 共享内存 + 消息队列 / eventfd（双 A7 通信）
+- C（core0_service / m4_fw / c8t6）、C++ Qt5（core1_ui 界面，qmake + book SDK 交叉编译）
+- K210 固件（CanMV MicroPython，CanMV IDE 开发）：2026-09-21 起为**纯发图固件**（`BUILD=2026-09-21-imgonly`），旧 KPU 识别固件归档在 `k210_fw/tmp_kpu_old/`
+- LPRNet 车牌识别（`lprnet.onnx` → RKNN，RK3588 NPU 推理 2.5ms/帧，替代 K210 本地 KPU）
+- DeepSeek Vision API（兜底二次识别，HTTPS；`transport=python` 通道已真机验证）
+- FreeRTOS + OpenAMP RPMSG（M4↔A7）、经典 CAN 2.0 500k（C8T6↔M4）
+- 共享内存 `/park_shm` v3 + 事件字（双 A7 通信）
 
 ## 硬件清单
 
-- 100ask-mp157 开发板（STM32MP157，双 A7 + M4）
-- LCD 屏幕（RGB / LTDC 直连）
-- **外接 K210 视觉识别模块**（自带摄像头 + KPU；UART 接 A7）
-- 红外线传感器 ×N（车辆到位检测，M4 GPIO 采集）
-- CAN 道闸控制器（M4 CAN 外设控制）
-- （可选）车位占用传感器 ×N（IO 电平，M4 采集；缺省用进出计数状态机演示）
-- WiFi 模块（板载；云端**唯一网络链路**，不用以太网）
+- 100ask-mp157 开发板（STM32MP157，双 A7 + M4）+ LCD 屏
+- **RK3588（定昌 DC-A588）**：8G RAM / 64G eMMC / 双千兆网口 / NPU；网线直连 MP157 以太网
+- **K210 视觉模块**（自带摄像头）：USB 插 **RK3588**（方案 2，2026-09-26 拍板；备选方案 1 = 插 MP157 走串口，见 `docs/protocols.md` §6.5）
+- C8T6 下位机节点（BH1750 遮光 + SG90 道闸 + OLED，TJA1050 挂 CAN）
+- WiFi 模块（MP157 板载；云端**唯一网络链路**）
 - 电源、线材等外围
 
 ## 目录结构
 
 ```
 park_demo/                      # 本仓库根
-├── README.md                   # 本文件（总览 / 目录 / 构建）
-├── k210_fw/                    # K210 固件（CanMV MicroPython，CanMV IDE 开发）
-│   ├── main.py / boot.py       # 主循环编排（预览流+指令分发+心跳）与上电引导
-│   ├── capture.py / preview.py # 摄像头 JPEG 采集、预览流拆帧发送
-│   ├── infer.py                # KPU 车牌识别（指令触发；低置信云兜底）
-│   ├── uart_proto.py           # 串口协议：分帧、CRC16-XMODEM、指令解析
-│   ├── config.py               # 集中参数（波特率/阈值/引脚）
-│   └── tools/selftest.py       # PC 端协议自检（无需板子）
-├── m4_fw/                      # M4 FreeRTOS 固件（OpenAMP 从端）
-│   ├── drivers/                # CAN / IO / 红外传感器驱动
-│   ├── rpmsg/                  # 帧收发、解析
-│   └── tasks/                  # FreeRTOS 任务（道闸 / 红外触发 / 故障检测）
+├── k210_fw/                    # K210 固件（CanMV MicroPython，纯图像采集上行）
+│   ├── main.py                 # 单文件固件：相机+JPEG+方向修正+console/帧协议双发图+心跳/统计
+│   ├── tmp_kpu_old/            # 旧 KPU 识别时代固件归档（park_app/sd_probe2/gc_restore/kpu_main）
+│   └── tools/                  # 宿主回归：build_main.py --check + 10 个 test（含 test_boot_launcher）
+├── m4_fw/                      # M4 FreeRTOS 固件（OpenAMP 从端，FDCAN2 网关 + rpmsg_bridge）
+├── c8t6/                       # C8T6 下位机（CubeIDE；sw_i2c OLED/BH1750 + CAN 从节点 + SG90）
+├── rk3588_service/             # RK3588 边缘识别服务（Python，纯 ASCII）
+│   ├── edge_hub.py             # 主服务：K210 行流读取 + JPEG 重组 + 周期识别 + TCP :8089 中继
+│   ├── lpr_server.py           # HTTP 测试台：POST /recognize（raw JPEG→JSON）、GET /health
+│   ├── lpr_decode.py           # LPRNet CTC 解码 + 字符表（67+blank，2026-09-26 实车标定）
+│   ├── edge_hub.service / lpr_server.service   # systemd unit 模板
+│   ├── tests/                  # 宿主单测（python -m unittest discover -s tests，32 项）
+│   └── README.md               # RK3588 侧部署/冒烟/排障
 ├── core0_service/              # A7-Core0，C 语言，实时业务底座（**⛔ 一行云代码都没有**）
-│   ├── rpmsg/                  # /dev/ttyRPMSG0 帧收发、粘包处理、心跳（第3步已实现）
-│   ├── ipc_shm/                # 与 Core1 共享内存 park_shm v3 + 事件通知（ipc_shm.c/park_shm.h）
+│   ├── rpmsg/                  # /dev/ttyRPMSG0 帧收发、粘包处理、心跳
+│   ├── ipc_shm/                # 与 Core1 共享内存 park_shm v3 + 事件通知
 │   ├── business/               # 停车场业务逻辑（app_config / business / whitelist / log）
-│   ├── storage/                # 轻量文件记录（可选，默认关闭；store.c → events.log/gate_log）
-│   ├── protocol/               # 预留（原 Modbus-TCP 上位机接口已于 2026-09-11 取消）
+│   ├── storage/                # 轻量文件记录（可选，默认关闭）
 │   ├── tools/                  # core0_selftest / core1_stub / rpmsg_cli / load_m4.sh / hostcheck
-│   ├── core0_main.c            # 业务守护入口
-│   ├── sample_core0.conf       # 配置模板（真文件 core0.conf 不入库）
-│   └── Makefile
+│   └── sample_core0.conf       # 配置模板（真文件 core0.conf 不入库）
 ├── core1_ui/                   # A7-Core1：K210 前端 + Qt 界面 + 云端兜底
-│   ├── k210_link/              # K210 串口预览/结果解析（python 联调脚本）
-│   └── qt_gui/                 # LCD 界面 + **第7步云端兜底（唯一云代码所在）**
+│   ├── k210_link/              # K210 上行流接收参考脚本 + README
+│   └── qt_gui/                 # LCD 界面 + **第7步云端兜底（唯一云代码所在）**（qmake 工程）
+│       ├── src/k210_link.*     #   K210 流解析：serial text/binary + file + **tcp 中继模式**
 │       ├── src/cloud_client.*  #   Qt Network 异步 POST + python3 回退传输
-│       ├── src/cloud_settings.*#   /etc/park/cloud.conf（含每厂商一把 key）
-│       ├── src/wifi_manager.*  #   wlan0 检测/改配置（20s 回滚）
 │       ├── src/settingspage.*  #   齿轮设置页（云端/网络/诊断）
 │       └── tools/              #   build_arm.sh（book 交叉编译）/ check_static.py（门禁）
-│   # 注意：`core1_ui/cloud_api/` 与 `core0_service/cloud/` 是**已删除的空占位目录**——
-│   # 云模块最终落在 park_ui 进程内（Core1 = park_ui），Core0 禁止发云请求。
 ├── docs/
 │   └── protocols.md            # 接口协议规格（字段级，正式维护副本）：
-│                               # CAN / K210 UART / RPMSG / park_shm / 云端 HTTP 已拷入
-└── deploy/
-    ├── sample_cloud.conf       # /etc/park/cloud.conf 模板
-    ├── sample_wpa_supplicant.conf  # /etc/wpa_supplicant.conf 模板
-    ├── sample_park-ui.env      # /etc/park-ui.env 模板
-    └── systemd/                # 开机链：board-power → wifi-up → park-clock → m4-load → core0-bus → park-ui
+│                               # CAN §1 / K210 UART §2 / RPMSG §3 / park_shm §4 / 云端 §5 / MP157↔RK3588 §6
+├── MD文档/rk3588/              # RK3588 调通记录（镜像/烧录/外设/NPU 全栈）
+├── deploy/
+│   ├── sample_cloud.conf       # /etc/park/cloud.conf 模板
+│   ├── sample_wpa_supplicant.conf  # /etc/wpa_supplicant.conf 模板
+│   ├── sample_park-ui.env      # /etc/park-ui.env 模板（含 PARK_UI_K210_TCP）
+│   └── systemd/                # 开机链：board-power → m4-load → core0-bus → rk3588-eth → park-ui
+└── PhaseMd/                    # 执行层任务分解（P<步>-<序号>，G0~G8 验收门；10 = 协议母本）
 ```
 
 ## 构建与运行（概览）
 
-1. **M4 固件**：编译出 `.elf` → 放入板卡 `/lib/firmware/` → 由 Linux remoteproc 启动 M4，且必须在 A7 业务之前就绪。
-2. **K210 固件**（`k210_fw/`）：CanMV IDE 通过 USB 连接板子，上传 .py 模块到 flash（boot→main 上电自启）；固件本体出厂已带 CanMV MicroPython（仅升级固件才需 kflash）。上电即常开输出 JPEG 预览流（接线与帧协议见 `docs/protocols.md`）。
-3. **Linux 侧**：`core0_service`（Makefile）、`core1_ui`（CMake）用 ST SDK 交叉编译后部署。
-4. **上电自启**：`deploy/systemd/` 下的 unit 负责 M4 装载与各进程启动；各进程的核绑定（taskset / systemd CPUAffinity）。
-5. **接口规格**：帧格式、共享内存结构体、K210 串口帧统一维护在 `docs/protocols.md`，四端（M4 / core0 / core1 / K210）共用。
+1. **M4 固件**：CubeIDE 编译 `.elf` → `/lib/firmware/m4_fw.elf` → remoteproc 启动（先于 A7 业务）。
+2. **C8T6**：CubeIDE 编译烧录（`c8t6/`，regen 核对项见 `AGENTS.md`）。
+3. **K210 固件**：CanMV IDE「保存到设备」上传 `k210_fw/main.py` 为板端 `main.py`；上电即向所在主机发图。
+4. **RK3588 侧**：`rk3588_service/` 按 `README.md` 部署（Tailscale scp 上传 + systemd），模型 `lprnet.rknn` 放 `/root/models/`。
+5. **Linux 侧**：`core0_service`（Makefile + book 交叉编译）；`core1_ui`（qmake + book SDK 交叉编译，`tools/build_arm.sh`）。
+6. **上电自启**：`deploy/systemd/install_all.sh`（板端跑）装齐开机链与 eth0 静态链路。
+7. **接口规格**：`docs/protocols.md`（改协议先改 `PhaseMd/10` 母本 → 同步 protocols → 改代码 → 变更记录）。
 
 ## 文档分工（内容隔离）
 
-字段级协议规格统一归属 `docs/protocols.md`（2026-09-07 已建）。
+字段级协议规格统一归属 `docs/protocols.md`（2026-09-07 已建；**2026-09-26 起 §6 = MP157↔RK3588 以太网**）。
