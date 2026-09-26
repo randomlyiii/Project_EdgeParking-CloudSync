@@ -1,0 +1,12 @@
+[Unit]
+Description=LPRNet HTTP test bench (RK3588 NPU)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/rk3588_service
+ExecStart=/usr/bin/python3 /opt/rk3588_service/lpr_server.py --model /root/models/lprnet.rknn --port 8088
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
