@@ -1,10 +1,13 @@
 [Unit]
-Description=RK3588 edge hub (K210 relay + LPRNet recognition)
+Description=RK3588 edge hub (camera relay + plate recognition)
 After=network.target
 
 [Service]
 WorkingDirectory=/opt/rk3588_service
-ExecStart=/usr/bin/python3 /opt/rk3588_service/edge_hub.py --source /dev/ttyACM0 --port 8089 --model /root/models/lprnet.rknn --engine hyperlpr3 --votes 2 --ng-reset 3
+# hyperlpr3 locates its models via $HOME/.hyperlpr3; systemd services get
+# no HOME by default -> KeyError('HOME') kills the recognizer silently
+Environment=HOME=/root
+ExecStart=/usr/bin/python3 /opt/rk3588_service/edge_hub.py --source /dev/video4 --cam-width 640 --cam-height 480 --cam-fps 30 --relay-fps 15 --port 8089 --model /root/models/lprnet.rknn --engine hyperlpr3 --votes 2 --ng-reset 3
 Restart=always
 RestartSec=2
 
