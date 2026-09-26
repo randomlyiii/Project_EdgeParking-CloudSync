@@ -764,5 +764,109 @@ if "saveConfig(" not in spt or "onSaveNetwork" not in spt:
     ok = False
 print("[pass] network edits can be written to wpa_supplicant.conf (vendor layout)")
 
+# 10. RK3588 edge link (2026-09-26, protocols.md section 6): the K210 feed is
+#     relayed over Ethernet from the RK3588 edge hub (edge_hub.py -> TCP :8089).
+#     Guards: the RK3588 services stay pure ASCII (board rule); the eth helper
+#     is idempotent ASCII without procps tools; no IP literal may appear in the
+#     GUI sources or the env sample (192.168.10.x lives only in deploy scripts);
+#     Core0 stays edge-unaware (the relay is consumed by Core1 only).
+rks = REPO / "rk3588_service"
+for f in ["edge_hub.py", "lpr_server.py", "lpr_decode.py",
+          "edge-hub.service", "lpr-server.service"]:
+    p = rks / f
+    if not p.exists():
+        print("[FAIL] rk3588_service/%s is missing" % f)
+        ok = False
+        continue
+    b = p.read_bytes()
+    bad = [i for i, x in enumerate(b) if x > 127]
+    if bad:
+        print("[FAIL] rk3588_service/%s : non-ASCII bytes at %s"
+              % (f, bad[:8]))
+        ok = False
+ehub = (rks / "edge_hub.py").read_text(encoding="utf-8", errors="replace")
+for needle in ["K2:OK:", "K2:NG:", "FrameAssembler", "ThreadingTCPServer",
+               "from lpr_server import Recognizer", "period_ms"]:
+    if needle not in ehub:
+        print("[FAIL] edge_hub.py misses '%s'" % needle)
+        ok = False
+lsrv = (rks / "lpr_server.py").read_text(encoding="utf-8", errors="replace")
+if "init_runtime()" not in lsrv or "target=\"rk3588\"" in lsrv:
+    print("[FAIL] lpr_server.py: on-device init_runtime() must have no target")
+    ok = False
+if "astype(np.uint8)" not in lsrv:
+    print("[FAIL] lpr_server.py: inference input must be NHWC uint8")
+    ok = False
+
+eth_sh = DEPLOY / "rk3588-eth.sh"
+if not eth_sh.exists():
+    print("[FAIL] rk3588-eth.sh is missing")
+    ok = False
+else:
+    t = eth_sh.read_text(encoding="utf-8", errors="replace")
+    if any(ord(c) > 127 for c in t):
+        print("[FAIL] rk3588-eth.sh is not pure ASCII")
+        ok = False
+    for needle in ["ip addr replace", "rk3588", "192.168.10.1/24"]:
+        if needle not in t:
+            print("[FAIL] rk3588-eth.sh misses '%s'" % needle)
+            ok = False
+    for tool in ["pgrep ", "pkill ", "timeout "]:
+        if tool in t:
+            print("[FAIL] rk3588-eth.sh uses '%s' (absent on the board)" % tool)
+            ok = False
+eth_svc = DEPLOY / "rk3588-eth.service"
+if not eth_svc.exists():
+    print("[FAIL] rk3588-eth.service is missing")
+    ok = False
+else:
+    t = eth_svc.read_text(encoding="utf-8", errors="replace")
+    if "Before=park-ui.service" not in t:
+        print("[FAIL] rk3588-eth.service must run before park-ui")
+        ok = False
+pui = (DEPLOY / "park-ui.service").read_text(encoding="utf-8", errors="replace")
+if not any("rk3588-eth.service" in d for d in _deps(pui)):
+    print("[FAIL] park-ui.service does not order itself after rk3588-eth")
+    ok = False
+for needle in ["rk3588-eth.sh", "systemctl enable rk3588-eth.service"]:
+    if needle not in ia:
+        print("[FAIL] install_all.sh misses '%s'" % needle)
+        ok = False
+# no IP literal in GUI sources or the env sample; the pair 192.168.10.1/.2 is
+# allowed ONLY in deploy scripts (rk3588-eth.sh) and the protocols/docs text
+env_sample = (REPO / "deploy" / "sample_park-ui.env").read_text(
+    encoding="utf-8", errors="replace")
+if "PARK_UI_K210_TCP" not in env_sample:
+    print("[FAIL] sample_park-ui.env does not document PARK_UI_K210_TCP")
+    ok = False
+for f in FILES:
+    b = (SRC / f).read_bytes()
+    if b"192.168." in b:
+        print("[FAIL] %s contains an IP literal (use the rk3588 hostname)"
+              % f)
+        ok = False
+if b"192.168." in env_sample.encode("utf-8"):
+    print("[FAIL] sample_park-ui.env contains an IP literal")
+    ok = False
+# the tcp mode must be real: worker open/close, mode dispatch and CLI/env entry
+kl = (SRC / "k210_link.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["openTcp()", "closeSocket()", "mode == \"tcp\"", "linkFd()"]:
+    if needle not in kl:
+        print("[FAIL] k210_link tcp mode misses '%s'" % needle)
+        ok = False
+mj = (SRC / "main.cpp").read_text(encoding="utf-8", errors="replace")
+for needle in ["PARK_UI_K210_TCP", "optTcp", "tcpHost"]:
+    if needle not in mj:
+        print("[FAIL] main.cpp misses the tcp entry (%s)" % needle)
+        ok = False
+# Core0 stays edge-unaware: the relay is a Core1 consumer, like the cloud code
+for p in (REPO / "core0_service").rglob("*.[ch]"):
+    if "rk3588" in p.read_text(encoding="utf-8", errors="replace"):
+        print("[FAIL] core0_service references rk3588 (edge link is Core1-only)")
+        ok = False
+        break
+print("[pass] RK3588 edge link: pure-ASCII services, idempotent eth helper, "
+      "hostname-only config")
+
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
