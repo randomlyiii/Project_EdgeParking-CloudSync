@@ -42,6 +42,14 @@ CAM_HMIRROR = False
 CAM_SW_VFLIP = False      # 软件层：垂直镜像（上下反）→ 关
 CAM_SW_HMIRROR = True     # 软件层：水平镜像（左右反）→ 开（修正当前症状）
 
+# ---- 识别取景框（2026-09-27，固件级裁剪，治帧率+准确率）----
+# 只框车牌区域再编码上行：小图编码快（帧率↑）、车牌占满画面（RK 的 LPRNet
+# 吃的是"车牌占满"级别的图，整帧 320x240 缩到 94x24 远处车牌必糊 → 准确率↑）。
+# RK 侧收到即裁好的图，lpr_server 无需 --roi。代价：上位机 LCD 预览 = 车牌特写。
+# 相对坐标 0~1：(x, y, w, h)；None = 全帧。调法：先 None 全帧跑，抓一帧看构图，
+# 把车牌框换算成比例填这里，CanMV IDE「保存到设备」生效；[CFG] 行回显 crop= 对账。
+CAM_CROP = None           # 例：(0.25, 0.55, 0.5, 0.30)
+
 # ---- 上行链路 ----
 # ⚠️ 实测(2026-09-07)：本固件 USB 只走 console(print) 文本；machine.UART 二进制帧到不了 USB。
 # LINK="console"=走 console 打印 base64 文本行（零线、必通、较慢，QVGA 约 0.5~1s/帧）；
@@ -50,7 +58,9 @@ LINK = "console"
 CONSOLE_CHUNK = 900       # console 模式：每行 base64 字符数(600→900 减行数提fps)
 CONSOLE_PACE_MS = 25      # 每行间延时(丢行就调回 40)
 CONSOLE_PREVIEW = 1       # 置 0 = 停发 base64 预览(不压缩、省 CPU)，串口只剩诊断行
-CONSOLE_IMG_EVERY = 10    # 每 N 帧发一张图（0/1 = 每帧都发）。发图频率：识别需要更多帧就调小
+CONSOLE_IMG_EVERY = 2     # 每 N 帧发一张图（0/1 = 每帧都发）。发图频率：识别需要更多帧就调小。
+                          # 2026-09-26 起主机 = RK3588 USB CDC，带宽充裕：2 -> 上行 ~5fps；
+                          # 旧值 10 是 MP157 串口时代省带宽留的，预览会显得卡。
 UART_ID = 1               # LINK="uart" 时的板级串口号（预留）
 UART_BAUD = 921600        # 起步值；实测误码可退回 460800
 UART_RX_BUF_LEN = 4096
@@ -317,6 +327,22 @@ def cam_init():
     except Exception as e:
         # ⛔ 这一行曾经把整个 cam_init 掀掉（C 层假 TypeError）。日志行永远不许毁掉一个阶段。
         print("[WARN] cam_init tail print failed: %r" % (e,))
+
+
+def apply_crop(img):
+    """固件级取景框（CAM_CROP）：裁完再编码/上屏。裁剪失败回退全帧，绝不抛。"""
+    if img is None or CAM_CROP is None:
+        return img
+    x = int(CAM_CROP[0] * CAM_W)
+    y = int(CAM_CROP[1] * CAM_H)
+    w = min(int(CAM_CROP[2] * CAM_W), CAM_W - x)
+    h = min(int(CAM_CROP[3] * CAM_H), CAM_H - y)
+    if w < 8 or h < 8:
+        return img
+    try:
+        return img.crop((x, y, w, h))
+    except Exception:
+        return img
 
 
 def capture_frame():
