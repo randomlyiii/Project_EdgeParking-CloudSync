@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,6 +65,71 @@ class TestRoiClamp(unittest.TestCase):
         self.assertLessEqual(y + h, 1.0)
         # degenerate input shape -> None
         self.assertIsNone(n((1.0, 1.0, 0.0, 0.0)))
+
+
+class TestHyperLpr3Recognizer(unittest.TestCase):
+    """Engine wrapper with a fake hyperlpr3 module (host has cv2/numpy)."""
+
+    def setUp(self):
+        import cv2
+        import numpy as np
+        img = np.zeros((60, 120, 3), np.uint8)
+        _ok, buf = cv2.imencode(".jpg", img)
+        self.jpeg = buf.tobytes()
+
+    @staticmethod
+    def _install(results):
+        mod = sys.modules.setdefault("hyperlpr3", types.ModuleType("hyperlpr3"))
+
+        class LicensePlateCatcher(object):
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __call__(self, img):
+                return results
+
+        mod.LicensePlateCatcher = LicensePlateCatcher
+
+    def tearDown(self):
+        sys.modules.pop("hyperlpr3", None)
+
+    @unittest.skipIf(lpr_server.np is None, "no numpy/cv2 on host")
+    def test_plate_happy(self):
+        self._install([("chuanA88888", 0.99, 0, [1, 2, 3, 4])])
+        r = lpr_server.HyperLpr3Recognizer()
+        plate, conf, info = r.plate(self.jpeg)
+        self.assertEqual(plate, "chuanA88888")
+        self.assertAlmostEqual(conf, 0.99, places=4)
+        self.assertEqual(info["box"], [1, 2, 3, 4])
+        self.assertEqual(info["ptype"], 0)
+
+    @unittest.skipIf(lpr_server.np is None, "no numpy/cv2 on host")
+    def test_best_of_many(self):
+        self._install([("x1", 0.5, 0, [0, 0, 1, 1]),
+                       ("x2", 0.9, 3, [5, 5, 9, 9])])
+        r = lpr_server.HyperLpr3Recognizer()
+        plate, _conf, info = r.plate(self.jpeg)
+        self.assertEqual(plate, "x2")
+        self.assertEqual(info["ptype"], 3)
+
+    @unittest.skipIf(lpr_server.np is None, "no numpy/cv2 on host")
+    def test_no_detection(self):
+        self._install([])
+        r = lpr_server.HyperLpr3Recognizer()
+        plate, conf, info = r.plate(self.jpeg)
+        self.assertEqual((plate, conf), ("", 0.0))
+        self.assertEqual(info.get("stage"), "no_det")
+
+    @unittest.skipIf(lpr_server.np is None, "no numpy/cv2 on host")
+    def test_bad_jpeg(self):
+        self._install([("chuanA88888", 0.9, 0, [0, 0, 1, 1])])
+        r = lpr_server.HyperLpr3Recognizer()
+        self.assertIsNone(r.plate(b"\x00\x01\x02"))
+
+    def test_missing_package(self):
+        sys.modules.pop("hyperlpr3", None)
+        with self.assertRaises(RuntimeError):
+            lpr_server.HyperLpr3Recognizer()
 
 
 class ServerCase(unittest.TestCase):

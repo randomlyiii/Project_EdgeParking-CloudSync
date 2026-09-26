@@ -34,7 +34,7 @@ from socketserver import StreamRequestHandler, ThreadingTCPServer
 
 import lpr_decode
 import plate_vote
-from lpr_server import Recognizer, TwoStageRecognizer
+from lpr_server import HyperLpr3Recognizer, Recognizer, TwoStageRecognizer
 
 DEFAULT_TTY = "/dev/ttyACM0"
 DEFAULT_PORT = 8089
@@ -434,6 +434,8 @@ class RecogThread(threading.Thread):
             extra = " box=%s" % (info["box"],)
         if info.get("det_conf") is not None:
             extra += " det=%.2f" % info["det_conf"]
+        if info.get("ptype") is not None:
+            extra += " ptype=%d" % info["ptype"]
         print("recog: OK conf=%.3f ms=%d chars=%d%s"
               % (conf, ms, len(plate), extra), flush=True)
 
@@ -477,6 +479,12 @@ def main(argv=None):
                     help="path to a yolov8 plate-detection .rknn; when set, "
                          "recognition becomes two-stage (detect -> crop -> "
                          "LPRNet) and --roi is ignored")
+    ap.add_argument("--engine", choices=["lprnet", "hyperlpr3"],
+                    default="lprnet",
+                    help="recognition engine: lprnet = RKNN NPU (default; "
+                         "with --det-model = yolov8 two-stage), hyperlpr3 = "
+                         "HyperLPR3 full pipeline on CPU onnxruntime (9/9 "
+                         "board A/B 2026-09-26, green-plate support)")
     ap.add_argument("--det-conf", type=float, default=0.25,
                     help="detection confidence threshold (two-stage only)")
     ap.add_argument("--det-margin", type=float, default=0.1,
@@ -505,7 +513,11 @@ def main(argv=None):
 
     recognizer = None
     try:
-        if args.det_model:
+        if args.engine == "hyperlpr3":
+            recognizer = HyperLpr3Recognizer()
+            print("edge hub: engine=hyperlpr3 (CPU onnxruntime, "
+                  "green-plate capable)", flush=True)
+        elif args.det_model:
             recognizer = TwoStageRecognizer(
                 args.det_model, args.model, margin=args.det_margin,
                 conf_thres=args.det_conf)

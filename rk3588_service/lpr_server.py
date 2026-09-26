@@ -181,6 +181,44 @@ class TwoStageRecognizer(object):
         }
 
 
+class HyperLpr3Recognizer(object):
+    """HyperLPR3 full pipeline (y5fu detect + RPNet v3 rec) on CPU onnxruntime.
+
+    Same plate() interface as Recognizer/TwoStageRecognizer. Board A/B
+    2026-09-26: 9/9 on the regression set where LPRNet misread the province
+    char (jing -> jin) and dropped tail chars on small plates. ~69ms/frame.
+    The hyperlpr3 import is lazy so this module still loads on a host
+    without the package (only constructing the recognizer requires it).
+    """
+
+    def __init__(self):
+        if np is None or cv2 is None:
+            raise RuntimeError("numpy/cv2 not installed")
+        try:
+            from hyperlpr3 import LicensePlateCatcher
+        except ImportError as exc:
+            raise RuntimeError("hyperlpr3 not installed (%s)" % (exc,))
+        # models auto-load from ~/.hyperlpr3 (seeded on the board)
+        self._catcher = LicensePlateCatcher()
+        self._lock = threading.Lock()
+
+    def plate(self, jpeg_bytes):
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        with self._lock:
+            res = self._catcher(img)
+        if not res:
+            return "", 0.0, {"stage": "no_det"}
+        # result tuple: (plate_str, conf, type_int, [x1, y1, x2, y2])
+        best = max(res, key=lambda r: float(r[1]))
+        return str(best[0]), float(best[1]), {
+            "box": [int(v) for v in best[3]],
+            "ptype": int(best[2]),
+        }
+
+
 def make_server(host, port, recognizer, model_path,
                 min_conf=0.70, max_bytes=MAX_BODY_BYTES):
     """Build (not start) the ThreadingHTTPServer. Split out for unit tests."""

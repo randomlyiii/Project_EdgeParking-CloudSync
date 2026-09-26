@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/rk3588_service
-ExecStart=/usr/bin/python3 /opt/rk3588_service/edge_hub.py --source /dev/ttyACM0 --port 8089 --model /root/models/lprnet.rknn --det-model /root/models/yolov8s.rknn --votes 2 --ng-reset 3
+ExecStart=/usr/bin/python3 /opt/rk3588_service/edge_hub.py --source /dev/ttyACM0 --port 8089 --model /root/models/lprnet.rknn --engine hyperlpr3 --votes 2 --ng-reset 3
 Restart=always
 RestartSec=2
 
