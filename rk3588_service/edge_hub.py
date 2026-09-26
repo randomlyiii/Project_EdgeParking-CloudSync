@@ -33,7 +33,7 @@ import time
 from socketserver import StreamRequestHandler, ThreadingTCPServer
 
 import lpr_decode
-from lpr_server import Recognizer
+from lpr_server import Recognizer, TwoStageRecognizer
 
 DEFAULT_TTY = "/dev/ttyACM0"
 DEFAULT_PORT = 8089
@@ -191,7 +191,7 @@ class CameraThread(threading.Thread):
     """
 
     def __init__(self, hub, latest, device, width, height, cam_fps,
-                 relay_fps, jpeg_quality):
+                 relay_fps, jpeg_quality, roi=None):
         super(CameraThread, self).__init__(daemon=True)
         self._hub = hub
         self._latest = latest
@@ -202,6 +202,15 @@ class CameraThread(threading.Thread):
         self._relayEvery = max(1, int(round(float(cam_fps) /
                                             max(1, relay_fps))))
         self._quality = jpeg_quality
+        # draw the ROI rectangle into the RELAYED frame (not the one the
+        # recognizer eats), so the LCD shows exactly what the crop covers.
+        self._drawBox = None
+        if roi and tuple(roi) != (0.0, 0.0, 1.0, 1.0):
+            x = min(max(float(roi[0]), 0.0), 0.99)
+            y = min(max(float(roi[1]), 0.0), 0.99)
+            w = min(max(float(roi[2]), 0.01), 1.0 - x)
+            h = min(max(float(roi[3]), 0.01), 1.0 - y)
+            self._drawBox = (x, y, w, h)
         self._stop = threading.Event()
 
     def stop(self):
@@ -244,7 +253,22 @@ class CameraThread(threading.Thread):
                     self._latest["at"] = int(time.time() * 1000)
                     if got % self._relayEvery == 0:
                         sent += 1
-                        for line in jpeg_to_k2_lines(jpeg):
+                        relay_jpeg = jpeg
+                        if self._drawBox is not None:
+                            x, y, w, h = self._drawBox
+                            x0 = int(x * self._w)
+                            y0 = int(y * self._h)
+                            x1 = min(x0 + int(w * self._w), self._w - 1)
+                            y1 = min(y0 + int(h * self._h), self._h - 1)
+                            vis = frame.copy()
+                            cv2.rectangle(vis, (x0, y0), (x1, y1),
+                                          (0, 255, 255), 2)
+                            rv, vbuf = cv2.imencode(
+                                ".jpg", vis,
+                                [cv2.IMWRITE_JPEG_QUALITY, self._quality])
+                            if rv:
+                                relay_jpeg = vbuf.tobytes()
+                        for line in jpeg_to_k2_lines(relay_jpeg):
                             self._hub.broadcast(line)
                     now = time.time()
                     if now - statAt >= 2.0:
@@ -326,7 +350,11 @@ class ReaderThread(threading.Thread):
 
 
 class RecogThread(threading.Thread):
-    """Periodic LPRNet on the newest fresh JPEG; result lines -> hub."""
+    """Periodic recognition on the newest fresh JPEG; result lines -> hub.
+
+    The recognizer exposes plate(jpeg) -> (plate, conf, info) | None
+    (lpr_server.Recognizer or TwoStageRecognizer).
+    """
 
     def __init__(self, hub, latest, recognizer, period_ms, fresh_ms,
                  min_conf, min_chars=5):
@@ -354,15 +382,16 @@ class RecogThread(threading.Thread):
                 continue
             try:
                 t0 = time.time()
-                logits = self._recognizer.logits(jpeg)
+                result = self._recognizer.plate(jpeg)
             except Exception as exc:
                 print("recog: inference error %r" % (exc,), file=sys.stderr,
                       flush=True)
                 continue
-            if logits is None:
+            if result is None:
                 continue
-            plate, conf, _seq = lpr_decode.ctc_greedy_decode(logits)
+            plate, conf, info = result
             ms = int((time.time() - t0) * 1000)
+            candidate = ""
             if not plate:
                 self._hub.broadcast("K2:NG:no_plate")
                 print("recog: no_plate conf=%.3f ms=%d"
@@ -376,12 +405,22 @@ class RecogThread(threading.Thread):
                 print("recog: low_conf conf=%.3f ms=%d"
                       % (conf, ms), flush=True)
             else:
-                payload = json.dumps(
-                    {"plate": plate, "confidence": round(conf, 4)},
-                    ensure_ascii=True)
-                self._hub.broadcast("K2:OK:" + payload)
-                print("recog: OK conf=%.3f ms=%d chars=%d"
-                      % (conf, ms, len(plate)), flush=True)
+                candidate = plate
+            if candidate:
+                self._emit_ok(candidate, conf, ms, info)
+
+    def _emit_ok(self, plate, conf, ms, info):
+        payload = json.dumps(
+            {"plate": plate, "confidence": round(conf, 4)},
+            ensure_ascii=True)
+        self._hub.broadcast("K2:OK:" + payload)
+        extra = ""
+        if info.get("box"):
+            extra = " box=%s" % (info["box"],)
+        if info.get("det_conf") is not None:
+            extra += " det=%.2f" % info["det_conf"]
+        print("recog: OK conf=%.3f ms=%d chars=%d%s"
+              % (conf, ms, len(plate), extra), flush=True)
 
 
 def main(argv=None):
@@ -416,8 +455,18 @@ def main(argv=None):
     ap.add_argument("--roi", default="0,0,1,1",
                     help="plate crop region as x,y,w,h in RELATIVE 0..1 "
                          "coordinates, applied before the 94x24 resize. "
-                         "Default = full frame. Tune with the relay frame "
-                         "grab (see README) until the plate fills the crop.")
+                         "Default = full frame. Ignored when --det-model is "
+                         "set (detection finds the plate). Tune with the relay "
+                         "frame grab (see README).")
+    ap.add_argument("--det-model", default="",
+                    help="path to a yolov8 plate-detection .rknn; when set, "
+                         "recognition becomes two-stage (detect -> crop -> "
+                         "LPRNet) and --roi is ignored")
+    ap.add_argument("--det-conf", type=float, default=0.25,
+                    help="detection confidence threshold (two-stage only)")
+    ap.add_argument("--det-margin", type=float, default=0.1,
+                    help="crop margin around the detected box, fraction of "
+                         "box size (two-stage only)")
     args = ap.parse_args(argv)
 
     roi = None
@@ -433,9 +482,18 @@ def main(argv=None):
 
     recognizer = None
     try:
-        recognizer = Recognizer(args.model, roi=roi)
-        print("edge hub: model loaded: %s roi=%s"
-              % (args.model, args.roi), flush=True)
+        if args.det_model:
+            recognizer = TwoStageRecognizer(
+                args.det_model, args.model, margin=args.det_margin,
+                conf_thres=args.det_conf)
+            print("edge hub: two-stage models loaded: det=%s rec=%s "
+                  "margin=%.2f det_conf=%.2f (roi ignored)"
+                  % (args.det_model, args.model, args.det_margin,
+                     args.det_conf), flush=True)
+        else:
+            recognizer = Recognizer(args.model, roi=roi)
+            print("edge hub: model loaded: %s roi=%s"
+                  % (args.model, args.roi), flush=True)
     except Exception as exc:
         print("edge hub: WARNING recognizer unavailable (%r) - "
               "preview relay only" % (exc,), file=sys.stderr, flush=True)
@@ -462,7 +520,7 @@ def main(argv=None):
     if os.path.basename(args.source).startswith("video"):
         reader = CameraThread(hub, latest, args.source, args.cam_width,
                               args.cam_height, args.cam_fps,
-                              args.relay_fps, args.jpeg_quality)
+                              args.relay_fps, args.jpeg_quality, roi=roi)
     else:
         reader = ReaderThread(hub, latest, args.source, args.baud)
     recog = RecogThread(hub, latest, recognizer, args.period, args.fresh,

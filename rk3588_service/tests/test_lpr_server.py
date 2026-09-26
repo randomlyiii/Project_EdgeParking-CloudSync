@@ -30,7 +30,7 @@ class StubRecognizer(object):
     """Returns a fixed plate, or None for 'undecodable image'."""
 
     def __init__(self, plate="\u7ca4B12345", fail_image=False):
-        self.plate = plate
+        self._plate = plate
         self.fail_image = fail_image
         self.calls = 0
 
@@ -38,7 +38,15 @@ class StubRecognizer(object):
         self.calls += 1
         if self.fail_image:
             return None
-        return logits_from_plate(self.plate)
+        return logits_from_plate(self._plate)
+
+    def plate(self, jpeg_bytes):
+        self.calls += 1
+        if self.fail_image:
+            return None
+        if not self._plate:
+            return "", 0.0, {}
+        return self._plate, 0.99, {}
 
 
 class TestRoiClamp(unittest.TestCase):

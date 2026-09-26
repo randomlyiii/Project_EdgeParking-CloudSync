@@ -40,10 +40,17 @@ def logits_from_plate(plate):
 
 class StubRecognizer(object):
     def __init__(self, plate="\u7ca4B12345"):
-        self.plate = plate
+        self._plate = plate
 
     def logits(self, jpeg):
-        return logits_from_plate(self.plate)
+        return logits_from_plate(self._plate)
+
+    def plate(self, jpeg):
+        if not self._plate:
+            return "", 0.0, {}
+        _p, _c, _s = lpr_decode.ctc_greedy_decode(
+            logits_from_plate(self._plate))
+        return self._plate, 0.99, {}
 
 
 class TestLineEmission(unittest.TestCase):

@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import lpr_decode
+import yolo_decode
 
 try:
     import numpy as np
@@ -102,6 +103,82 @@ class Recognizer(object):
         with self._lock:
             outs = self._rknn.inference(inputs=[img])
         return outs[0][0].tolist()                  # (68, 18)
+
+    def plate(self, jpeg_bytes):
+        """Uniform interface with TwoStageRecognizer: decode to a plate.
+        Returns (plate, conf, info) or None when the JPEG cannot be decoded."""
+        logits = self.logits(jpeg_bytes)
+        if logits is None:
+            return None
+        plate, conf, _seq = lpr_decode.ctc_greedy_decode(logits)
+        return plate, conf, {}
+
+
+class TwoStageRecognizer(object):
+    """yolov8s plate detection + LPRNet recognition (same plate() interface).
+
+    Detection replaces the fixed --roi crop: the plate may sit anywhere in
+    the frame. The best box is expanded by `margin` before the 94x24 LPRNet
+    resize (a tight box clips the last character - bench finding 2026-09-26).
+    Returns (plate, conf, info); info carries the detection box/conf.
+    """
+
+    def __init__(self, det_model, rec_model, margin=0.1, conf_thres=0.25,
+                 iou_thres=0.45, det_size=640):
+        if RKNNLite is None:
+            raise RuntimeError("rknnlite not installed")
+        if np is None or cv2 is None:
+            raise RuntimeError("numpy/cv2 not installed")
+        self._margin = margin
+        self._conf = conf_thres
+        self._iou = iou_thres
+        self._det_size = det_size
+        self._det = RKNNLite()
+        if self._det.load_rknn(det_model) != 0:
+            raise RuntimeError("load_rknn failed: %s" % det_model)
+        if self._det.init_runtime() != 0:
+            raise RuntimeError("det init_runtime failed")
+        self._rec = RKNNLite()
+        if self._rec.load_rknn(rec_model) != 0:
+            raise RuntimeError("load_rknn failed: %s" % rec_model)
+        if self._rec.init_runtime() != 0:
+            raise RuntimeError("rec init_runtime failed")
+        self._lock = threading.Lock()
+
+    def plate(self, jpeg_bytes):
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)   # BGR, LPRNet training order
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        size = self._det_size
+        scale, px, py, nw, nh = yolo_decode.letterbox(w, h, size)
+        lb = np.full((size, size, 3), yolo_decode.PAD_COLOR, np.uint8)
+        lb[py:py + nh, px:px + nw] = cv2.resize(img, (nw, nh))
+        # the detector was trained in the ultralytics pipeline (RGB order)
+        lb = cv2.cvtColor(lb, cv2.COLOR_BGR2RGB)
+        with self._lock:
+            outs = self._det.inference(
+                inputs=[lb[np.newaxis, :].astype(np.uint8)])
+        keep = yolo_decode.decode(outs[0].tolist(), self._conf, self._iou,
+                                  max_det=1)
+        if not keep:
+            return "", 0.0, {"stage": "no_det"}
+        x1, y1, x2, y2 = yolo_decode.unletterbox(keep[0][:4], scale, px, py)
+        box = yolo_decode.expand_box((x1, y1, x2, y2), self._margin, w, h)
+        if box is None:
+            return "", 0.0, {"stage": "bad_box"}
+        cx1, cy1, cx2, cy2 = (int(round(v)) for v in box)
+        crop = img[cy1:cy2, cx1:cx2]
+        small = cv2.resize(crop, (94, 24))
+        with self._lock:
+            logits = self._rec.inference(
+                inputs=[small[np.newaxis, :].astype(np.uint8)])
+        plate, conf, _seq = lpr_decode.ctc_greedy_decode(logits[0][0].tolist())
+        return plate, conf, {
+            "box": [cx1, cy1, cx2, cy2],
+            "det_conf": round(keep[0][4], 4),
+        }
 
 
 def make_server(host, port, recognizer, model_path,
