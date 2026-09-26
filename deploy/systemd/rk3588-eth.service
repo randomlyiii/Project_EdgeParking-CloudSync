@@ -1,0 +1,15 @@
+[Unit]
+Description=Static eth0 link to the RK3588 edge node
+# park_ui reaches the K210 image feed through the edge hub relay
+# (rk3588:8089); bring the link up before the UI so the first connect
+# attempt already has a route. Local-only: never order this before the
+# network units, and never let it wait for WiFi.
+Before=park-ui.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/park_ui/tools/rk3588-eth.sh
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

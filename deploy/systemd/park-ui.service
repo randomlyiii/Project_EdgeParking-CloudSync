@@ -10,8 +10,8 @@ Description=EdgeParking park_ui (Qt 5.12.8 linuxfb) - parking lot UI
 # M4/C8T6 gate loop and the K210 feed are all local, so a missing AP must not
 # delay them. WiFi comes up in parallel (wifi-up.service) and the WIFI chip shows
 # "down" until it does; the clock unit is what waits for the link, not us.
-After=m4-load.service core0-bus.service board-power.service multi-user.target
-Wants=m4-load.service core0-bus.service board-power.service multi-user.target
+After=m4-load.service core0-bus.service board-power.service rk3588-eth.service multi-user.target
+Wants=m4-load.service core0-bus.service board-power.service rk3588-eth.service multi-user.target
 
 [Service]
 Type=simple
