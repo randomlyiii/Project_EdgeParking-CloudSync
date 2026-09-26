@@ -52,6 +52,7 @@ public slots:
     void onRecogResult(const QString &plate, double confidence, int source);
     void onRecogFailed(const QString &reason);
     void onK210Busy(bool busy);
+    void onPreviewFps(double fps);   /* decoded preview rate chip */
     void onCloudPending(bool pending);
     /* step 7 status chips: wifi link and cloud health */
     void setWifiChip(const QString &text, bool ok);
@@ -87,6 +88,7 @@ private:
     QLabel *m_lblM4 = nullptr;
     QLabel *m_lblCore1 = nullptr;
     QLabel *m_lblCloud = nullptr;
+    QLabel *m_lblFps = nullptr;         /* decoded preview rate (2026-09-26) */
     QLabel *m_lblWifi = nullptr;        /* step 7: wlan0 link state */
     QLabel *m_lblClock = nullptr;
     CloudState m_cloudState = Unknown;

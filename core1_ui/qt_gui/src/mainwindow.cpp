@@ -73,7 +73,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&m_tickerTimer, &QTimer::timeout, this, &MainWindow::onTicker);
     connect(&m_popTimer, &QTimer::timeout, m_popup, &QWidget::hide);
 
-    m_frameTimer.start(100);
+    /* Preview pull rate = display frame rate (each tick paints the newest
+     * decoded frame). 60 ms ~ 15 fps, matching the edge hub relay
+     * (--relay-fps 15); 100 ms (=10 fps) was the K210-serial era. */
+    m_frameTimer.start(60);
     m_clockTimer.start(1000);
     m_tickerTimer.start(4000);
     onClock();
@@ -162,6 +165,8 @@ void MainWindow::buildUi()
     m_lblCore1 = statusChip(statusBar);
     m_lblWifi = statusChip(statusBar);      /* step 7 */
     m_lblCloud = statusChip(statusBar);
+    m_lblFps = statusChip(statusBar);
+    m_lblFps->setText(QStringLiteral("FPS:--"));
     m_lblClock = statusChip(statusBar);
     sb->addWidget(m_lblSys);
     sb->addWidget(m_lblRpmsg);
@@ -169,6 +174,7 @@ void MainWindow::buildUi()
     sb->addWidget(m_lblCore1);
     sb->addWidget(m_lblWifi);
     sb->addWidget(m_lblCloud);
+    sb->addWidget(m_lblFps);
     sb->addStretch(1);
     /* step 7: gear -> full-screen settings page (cloud / wifi / diagnostics) */
     m_btnSettings = new QPushButton(QStringLiteral("SET"), statusBar);
@@ -431,6 +437,12 @@ void MainWindow::onRecogResult(const QString &plate, double confidence,
 void MainWindow::onRecogFailed(const QString &reason)
 {
     pushEvent(QString("recog failed: %1").arg(reason));
+}
+
+void MainWindow::onPreviewFps(double fps)
+{
+    m_lblFps->setText(QStringLiteral("FPS:%1")
+                      .arg(fps, 0, 'f', 1));
 }
 
 void MainWindow::onCloudPending(bool pending)

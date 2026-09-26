@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <algorithm>
 
 #include <errno.h>
@@ -133,6 +134,8 @@ signals:
     void recogFailed(const QString &reason);
     void snapshotCaptured(int sizeBytes);
     void busyChanged(bool busy);
+    /* decoded preview fps, emitted ~1/s (window stats from publishJpeg) */
+    void previewFps(double fps);
     /* One non-K2 line from the K210 console, i.e. its own log: [BOOT]/[MEM]/
      * [SD]/[KPU]/[CAM]/[RECOG]/[stat].  Raw and untrusted (it is whatever the
      * board printed), so the consumer journals and filters it.  Added 2026-09-16:
@@ -184,6 +187,9 @@ private:
     QMutex m_mutex;
     QImage m_latest;
     bool m_newFrame = false;
+    /* preview fps meter: window stats, emitted ~1/s (2026-09-26) */
+    QElapsedTimer m_fpsWin;
+    int m_fpsFrames = 0;
 
     /* --- fd --- */
     int m_fd = -1;
@@ -205,6 +211,16 @@ private:
         QImage img;
         if (!img.loadFromData(jpeg, "JPEG") || img.isNull())
             return;
+        /* fps meter over published (decoded) frames: ~1.5 s window */
+        if (!m_fpsWin.isValid())
+            m_fpsWin.start();
+        if (++m_fpsFrames >= 2 && m_fpsWin.elapsed() >= 1500)
+        {
+            emit previewFps(double(m_fpsFrames) * 1000.0 /
+                            double(m_fpsWin.elapsed()));
+            m_fpsWin.restart();
+            m_fpsFrames = 0;
+        }
         /* display-side orientation only; K210 firmware already hmirrors so
          * its onboard LCD is correct. Mode from env or compile-time default. */
         if (mode != "file")
@@ -773,6 +789,8 @@ K210Link::K210Link(QObject *parent)
             this, &K210Link::snapshotCaptured);
     connect(m_worker, &K210LinkWorker::busyChanged,
             this, &K210Link::busyChanged);
+    connect(m_worker, &K210LinkWorker::previewFps,
+            this, &K210Link::previewFps);
     connect(m_worker, &K210LinkWorker::k210Log, this, &K210Link::k210Log);
 
     m_thread.setObjectName("k210_link");

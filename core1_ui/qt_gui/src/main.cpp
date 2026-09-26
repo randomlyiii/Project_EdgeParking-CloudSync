@@ -171,6 +171,8 @@ int main(int argc, char *argv[])
                      &win, &MainWindow::onRecogFailed);
     QObject::connect(&link, &K210Link::busyChanged,
                      &win, &MainWindow::onK210Busy);
+    QObject::connect(&link, &K210Link::previewFps,
+                     &win, &MainWindow::onPreviewFps);
     /* The K210's own console log (everything that is not K2: protocol).  Journal
      * it always - rate-limited only for the burst lines - and put the useful
      * ones on the panel ticker, so "leave the IDE" no longer means "go blind". */

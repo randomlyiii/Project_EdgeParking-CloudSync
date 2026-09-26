@@ -53,6 +53,9 @@ signals:
     void recogResult(const QString &plate, double confidence, int source);
     void recogFailed(const QString &reason); /* 0xC3 */
     void snapshotCaptured(int sizeBytes);    /* 0x02 purpose=1 */
+    /* decoded preview stream rate, emitted ~1/s by the worker (2026-09-26):
+     * lets the panel show the real uplink fps instead of guessing */
+    void previewFps(double fps);
     /* 0x7E heartbeat payload bit0 (busy) edge-triggered notify */
     void busyChanged(bool busy);
     /* K210 console log line (anything that is not part of the K2: protocol):
