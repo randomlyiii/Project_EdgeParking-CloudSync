@@ -180,6 +180,35 @@ class TestRecogThread(unittest.TestCase):
         lines = self._run(plate="")
         self.assertTrue(lines[0].startswith("K2:NG:no_plate"), lines)
 
+    def _run_voted(self, plate="\u7ca4B12345", votes=2, wait_s=1.0):
+        hub = FakeHub()
+        latest = {"jpeg": JPEG_DUMMY,
+                  "at": int(time.time() * 1000)}
+        rec = edge_hub.RecogThread(hub, latest, StubRecognizer(plate),
+                                   period_ms=50, fresh_ms=10000,
+                                   min_conf=0.7, votes=votes)
+        rec.start()
+        try:
+            deadline = time.time() + wait_s
+            while time.time() < deadline:
+                time.sleep(0.01)
+        finally:
+            rec.stop()
+            rec.join(timeout=2)
+        return hub.lines
+
+    def test_votes_gate_ok_emission(self):
+        lines = self._run_voted(votes=2)
+        ok = [l for l in lines if l.startswith("K2:OK:")]
+        self.assertEqual(len(ok), 1)            # confirmed once, not per cycle
+        obj = json.loads(ok[0][len("K2:OK:"):])
+        self.assertEqual(obj["plate"], "\u7ca4B12345")
+
+    def test_votes_legacy_default_broadcasts_each_cycle(self):
+        lines = self._run_voted(votes=1, wait_s=0.55)   # ~11 cycles at 50ms
+        ok = [l for l in lines if l.startswith("K2:OK:")]
+        self.assertGreater(len(ok), 1)          # legacy: every cycle emits
+
 
 class TestLineHubTcp(unittest.TestCase):
     def test_relay_over_tcp(self):

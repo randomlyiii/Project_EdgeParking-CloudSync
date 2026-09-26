@@ -33,6 +33,7 @@ import time
 from socketserver import StreamRequestHandler, ThreadingTCPServer
 
 import lpr_decode
+import plate_vote
 from lpr_server import Recognizer, TwoStageRecognizer
 
 DEFAULT_TTY = "/dev/ttyACM0"
@@ -353,11 +354,14 @@ class RecogThread(threading.Thread):
     """Periodic recognition on the newest fresh JPEG; result lines -> hub.
 
     The recognizer exposes plate(jpeg) -> (plate, conf, info) | None
-    (lpr_server.Recognizer or TwoStageRecognizer).
+    (lpr_server.Recognizer or TwoStageRecognizer). With votes > 1 a
+    PlateVoter gates OK emission: the same plate must win `votes`
+    consecutive cycles, and is broadcast only once until it disappears.
+    NG lines stay per-cycle for diagnosis.
     """
 
     def __init__(self, hub, latest, recognizer, period_ms, fresh_ms,
-                 min_conf, min_chars=5):
+                 min_conf, min_chars=5, votes=1, ng_reset=3):
         super(RecogThread, self).__init__(daemon=True)
         self._hub = hub
         self._latest = latest
@@ -369,6 +373,9 @@ class RecogThread(threading.Thread):
         # false positive no matter how confident the net is (seen live on
         # the bench: "jin A" at conf 1.000 on a bare wall, 2026-09-26).
         self._min_chars = min_chars
+        self._voter = None
+        if votes and votes > 1:
+            self._voter = plate_vote.PlateVoter(votes, ng_reset)
         self._stop = threading.Event()
 
     def stop(self):
@@ -406,8 +413,16 @@ class RecogThread(threading.Thread):
                       % (conf, ms), flush=True)
             else:
                 candidate = plate
-            if candidate:
-                self._emit_ok(candidate, conf, ms, info)
+            if self._voter is None:
+                if candidate:
+                    self._emit_ok(candidate, conf, ms, info)
+                continue
+            emitted = self._voter.update(candidate)
+            if emitted:
+                self._emit_ok(emitted, conf, ms, info)
+            elif candidate:
+                print("recog: hold plate=%s conf=%.3f ms=%d"
+                      % (candidate, conf, ms), flush=True)
 
     def _emit_ok(self, plate, conf, ms, info):
         payload = json.dumps(
@@ -467,6 +482,14 @@ def main(argv=None):
     ap.add_argument("--det-margin", type=float, default=0.1,
                     help="crop margin around the detected box, fraction of "
                          "box size (two-stage only)")
+    ap.add_argument("--votes", type=int, default=1,
+                    help="consecutive cycles the same plate must win before "
+                         "its K2:OK line is broadcast (misread filter; the "
+                         "wrong reads are confident, conf alone cannot catch "
+                         "them). 1 = legacy per-cycle broadcast")
+    ap.add_argument("--ng-reset", type=int, default=3,
+                    help="consecutive NG cycles after which the voter "
+                         "re-arms and a returning plate re-triggers OK")
     args = ap.parse_args(argv)
 
     roi = None
@@ -524,7 +547,8 @@ def main(argv=None):
     else:
         reader = ReaderThread(hub, latest, args.source, args.baud)
     recog = RecogThread(hub, latest, recognizer, args.period, args.fresh,
-                        args.min_conf, min_chars=args.min_chars)
+                        args.min_conf, min_chars=args.min_chars,
+                        votes=args.votes, ng_reset=args.ng_reset)
     reader.start()
     recog.start()
     print("edge hub: listening on %s:%d source=%s period=%dms"
