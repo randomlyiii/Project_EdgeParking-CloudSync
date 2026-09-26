@@ -255,7 +255,65 @@ Authorization: Bearer <apiKey>       # key 只在内存 + /etc/park/cloud.conf�
 
 `ip link set wlan0 up` → `wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf` → `udhcpc -i wlan0 -n -q -t 5 -T 3`；写配置前备份 `/etc/wpa_supplicant.conf.bak`，**20s 内未拿到 IPv4 自动回滚并重新应用**（改 WiFi 等于拆自己脚下的 SSH 梯子）。板端无 `pgrep/pkill/timeout`，杀旧 `wpa_supplicant` 用 `/proc` 扫描（并跳过 `$$`）。
 
-## 6. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
+## 6. MP157 ↔ RK3588 以太网（边缘识别）—— 2026-09-26 定版实现
+
+拓扑（拍板 = **方案 2**：K210 物理上插 RK3588；备选方案 1 = K210 留 MP157、
+JPEG 由 park_ui 转发给 RK3588，未实现、见 §6.5）：
+
+```
+K210 --USB CDC--> RK3588 edge_hub (rk3588_service/edge_hub.py)
+edge_hub --TCP :8089（只绑 192.168.10.2 板间专线，无鉴权=专线物理信任）--> MP157 park_ui (k210_link, mode=tcp)
+```
+
+### 6.1 TCP 行中继（主通道 :8089）
+
+- 载荷 = K210 console 文本流**原样转发**：`K2:IMG:`/`K2:END:` base64 帧、
+  `[stat]`/`[BOOT]` 等日志行，`\n` 分行。
+- edge_hub 在流中**注入**识别结果行（默认周期 3s，取最新完整 JPEG 帧）：
+  - 成功：`K2:OK:` + JSON `{"plate":"<plate>","confidence":0..1}`（ensure_ascii，
+    QT 侧 `QJsonDocument` 直接解析，`recogResult(plate,conf,0)`）
+  - 失败：`K2:NG:no_plate` / `K2:NG:low_conf`（→ `recogFailed` → 云兜底链不变）
+- MP157 侧解析与 §2 完全一致（`k210_link` mode=tcp 只换传输层：socket 替代
+  tty，select+read 同构；对端关闭/出错 → link DOWN → 2s 重连）。
+- 帧完整性约束同 §2：重组总长必须等于 `K2:END:` 声明长度。
+- 背压：hub 每客户端 256 行队列，满即丢弃该客户端（靠重连恢复）；K210 的
+  fail-stop 语义由 hub reader 线程兜底——无客户端也照常读，行直接丢。
+
+### 6.2 HTTP 测试台（辅助通道 :8088，curl 对拍/诊断）
+
+- 监听 **192.168.10.2**（板间专线地址，不绑 0.0.0.0；服务无鉴权，专线物理信任，2026-09-26 起）。
+- `GET /health` → `{"ok":bool,"classes":68,"model":"<path>"}`（`ok=false` = 模型/运行时不可用）
+- `POST /recognize`：body = raw JPEG（≤1MB，注意是 POST 不是 PUT）
+  - 200 `{"plate":"...","conf":0.9864,"ms":8.2}`
+  - 200 `{"error":"no_plate"|"low_conf","conf":...,"ms":...}`
+  - 400 `{"error":"bad_length"|"bad_image"}`；503 `{"error":"rknn unavailable"}`
+
+### 6.3 识别口径（`rk3588_service/lpr_server.py` + `lpr_decode.py`）
+
+- 模型 `lprnet.onnx`（1×3×24×94 → 1×68×18 CTC）板载转换：`config(mean_values=
+  [[127.5]*3], std_values=[[127.5]*3], target_platform='rk3588')`（toolkit2 2.3.2
+  键名，旧 `input_mean/input_std` 已废弃）；`build(do_quantization=False)`。
+- **推理**：`init_runtime()` **不带 target**（带 `target='rk3588'` 会走 adb/代理
+  模式报 "Unsupported run platform"）；输入 **NHWC uint8** `(1,24,94,3)`，归一化
+  由运行时按导出配置自动做。实测 川A88888 conf 0.9864、NPU 2.5ms。
+- 字符表 67（31 省份 + 数字 + 字母无 I/O + 使领）+ blank=67；CTC 贪婪解码
+  （相邻重复合并、blank 删除），conf = 逐 timestep 选中类 softmax 概率均值。
+- 阈值 `--min-conf 0.70`（低于报 `low_conf`）。
+
+### 6.4 网络与配置
+
+- MP157 侧 = `192.168.10.1/24`（`deploy/systemd/rk3588-eth.sh/service` 幂等配置；**现网 = MP157 板载网口(eth0) ↔ RK3588 eth0 直连**（皆千兆）；曾试 RTL8152 USB 网卡因载波抖动退役，RK 侧 NM 抢口坑与处置见 `MD文档/rk3588/调试记录.md` §九），/etc/hosts 维护 `rk3588` → `192.168.10.2`。
+- park_ui：`PARK_UI_K210_TCP`（默认 `rk3588:8089`；**显式置空** = 回退本地串口
+  `$PARK_UI_TTY`）；CLI `--tcp host:port`。启动链 `... -> rk3588-eth -> park-ui`。
+- 隐私：Qt 源码与样例文件不出现 IP 字面量，一律 `rk3588` 主机名。
+
+### 6.5 备选拓扑（未实现，记录在案）
+
+方案 1 = K210 留 MP157（LCD 本地预览），park_ui 把 JPEG POST 给 RK3588
+`/recognize` 并收结果——需要在 park_ui 内新增识别转发客户端；网络往返与
+带宽收益相对方案 2 为零，仅当 K210 必须留在 MP157 物理上时才考虑。
+
+## 7. 尚未拷入的通道（母本 `PhaseMd/10` 保留正文）
 
 | 通道 | 内容概要 | 状态 |
 |---|---|---|
@@ -274,3 +332,4 @@ Authorization: Bearer <apiKey>       # key 只在内存 + /etc/park/cloud.conf�
 | 2026-09-11 | 共享内存正式拷入为 §4（v3）：`park_shm_t` 全字段/偏移、事件码与**跨进程事件通道**（匿名 eventfd 不可跨进程 → 改用 `evt_bits_c0/c1`+`evt_seq_c0/c1`，200ms 轮询）、Core0/Core1 字段归属、故障字位定义；同时明确 Core1 必须 `O_RDWR` 挂载（只读会让心跳/结果写不进 → Core0 判失联）。头文件加编译期布局断言（sizeof=76）。Modbus-TCP 通道标记废弃 | Core0 / Core1 |
 | 2026-09-11 | 新增 §5 云端 HTTP 通道（第7步）：OpenAI 兼容 `/chat/completions` 请求体、base64 图像、三级容错解析、accepted/unreadable/failed 三分类、超时 5s/重试 ≤1/单次触发、`cloud_pending` 收敛保证、三阈值口径（Core0 `conf_threshold` vs Core1 `trigger_conf`/`accept_conf`）、`/etc/park/cloud.conf` 密钥策略、WiFi 三步配置 + 20s 回滚；§6 保留"尚未拷入"（MQTT 可选） | Core1（Core0 禁云请求） |
 | 2026-09-11 | **CAN + RPMSG 接口 v2（不兼容重构）**：§1 CAN 载荷改为纯语义——0x200 = `ev/arg(大端)/status/tick(大端)`（取消 lux/drop%）、0x100 = `cmd/arg/seq/rsv`（新增 0x03 状态查询、0x10 灵敏度档位，取消"查询回 0x200 假事件"）、0x110 = `kind/code/arg`（事件确认 + 指令确认）、0x210 = `status/uptime_ms/dev_type/fw_ver/node_id`；新增 §1.0 设备抽象与传感器隔离原则；§3 的 0x21 由 17B CAN 原始透传改为 **9B 语义事件**（事件码与 CAN 同一张表，字节序在大端↔小端转换）。C8T6 与 M4 必须同时重烧、Core0 必须重编（只改一端会明确报 `0x21 decode failed: len=17`）；Core1 无需改动 | C8T6 / M4 / Core0 |
+| 2026-09-26 | 新增 §6「MP157↔RK3588 以太网」：**方案 2 拍板**（K210 插 RK3588，`rk3588_service/edge_hub.py` 把 K210 行流 + 注入的 `K2:OK/NG` 识别结果经 TCP :8089 中继给 park_ui `k210_link` mode=tcp——LCD 预览/弹卡链零改动）；HTTP 测试台 :8088（POST raw JPEG → JSON）；识别口径（NHWC uint8、`init_runtime()` 不带 target、67+blank 字符表 2026-09-26 实车标定）；MP157 eth0 静态 + `rk3588` 主机名；备选方案 1（park_ui 转发）记录在 §6.5 未实现。原"尚未拷入的通道"顺延为 §7 | RK3588 / Core1 |

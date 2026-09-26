@@ -137,6 +137,14 @@ typedef struct {
 - DeepSeek：HTTPS POST chat/completions（模型/端点以官方现行 Vision 能力为准，核实后回填）；图像 base64 dataURL；超时 5s；输出 JSON `{"plate","confidence"}`。
 - MQTT 主题（可选）：`park/{sn}/status`（周期+变更）、`park/{sn}/events`（进出/开闸记录）、`park/{sn}/cmd`（下行参数）；离线队列补传带 seq 去重。
 
+## 7. MP157 ↔ RK3588 以太网（边缘识别，2026-09-26 定版；正式副本见 docs/protocols.md §6）
+
+- 拓扑（方案 2 拍板）：K210 --USB CDC--> RK3588 `edge_hub.py` --TCP :8089--> park_ui（`k210_link` mode=tcp）。行流 = K210 console 原样转发（K2:IMG/END 帧 + 日志行）+ hub 注入 `K2:OK:{"plate","confidence"}` / `K2:NG:no_plate|low_conf`（周期 3s，最新完整帧）；MP157 解析与 §3 同构、仅传输层 tty→socket。慢客户端丢弃重连；K210 fail-stop 由 hub reader 兜底。
+- HTTP 测试台 :8088：`POST /recognize`（raw JPEG ≤1MB）→ 200 `{"plate","conf","ms"}` / `{"error":"no_plate"|"low_conf"}`；`GET /health`。
+- 识别：lprnet.onnx 板载转 rknn3588（toolkit2 2.3.2 键 `mean_values/std_values`）；推理 `init_runtime()` **不带 target**（带 target 走 adb 代理报错）、输入 NHWC uint8 `(1,24,94,3)`、归一化运行时做；字符表 67（31 省+数字+字母无 I/O+使领）+ blank 67，CTC 贪婪解码 + softmax 均值 conf（川A88888 实车标定）；`--min-conf 0.70`。
+- 网络：MP157 eth0 `192.168.10.1/24`（rk3588-eth.sh/service 幂等）+ hosts `rk3588`→`192.168.10.2`；park_ui `PARK_UI_K210_TCP`（默认 `rk3588:8089`，显式置空回退本地串口）；Qt 源码/样例禁 IP 字面量。
+- 备选方案 1（K210 留 MP157、park_ui 转发 JPEG 给 /recognize）未实现，见正式副本 §6.5。
+
 ## 变更记录
 
 | 日期 | 变更 | 影响端 |
@@ -146,3 +154,4 @@ typedef struct {
 | 2026-09-07 | RPMSG §2 定版（Linux 侧先行）：单帧 payload ≤480B；0x11/0x12/0x13 空 payload；0x21=id(4B LE)+dlc(1B)+data(8B)+tick(4B LE)；0x22=1B；0x23=闸(1B)/在线(1B)/CAN错误计数 u16 LE；0x7E=1B 序号；1s 无有效帧即 LINK_DOWN；0x23 布局供 M4 第3步实现照做 | Core0 / M4 |
 | 2026-09-11 | **接口 v2 修订（同日评审）**：删除"从端用 0x110 回指令确认"——方向错误（0x110 属主→从段，主端过滤器只收 0x200~0x2FF），0x110 只保留 kind=0x01 事件确认；0x100 的 seq 保留但不回执 | C8T6 / M4 |
 | 2026-09-11 | **接口 v2（不兼容重构，母本先行）**：CAN §1 全面语义化（0x200 = ev/arg(大端)/status/tick(大端)，**删 lux/drop%**；0x100 = cmd/arg/seq，查询 0x03、档位 0x10；0x110 = kind/code/arg；0x210 = status/uptime_ms/dev_type/fw_ver/node_id）+ 新增"设备抽象与传感器隔离原则"；RPMSG §2 的 0x21 由 17B CAN 透传改为 **9B 语义事件**（事件码与 CAN 同表）。C8T6 与 M4 必须同时重烧、Core0 重编；Core1 不动 | C8T6 / M4 / Core0 |
+| 2026-09-26 | 新增 §7「MP157↔RK3588 以太网」：方案 2 拍板（K210 插 RK3588，edge_hub TCP :8089 行中继 + 注入 K2:OK/NG；park_ui k210_link mode=tcp）+ HTTP 测试台 :8088 + 识别口径（NHWC uint8 / init_runtime 无 target / 字符表实车标定）；正式副本同步为 protocols.md §6（原 §6 顺延 §7） | RK3588 / Core1 |
