@@ -5,6 +5,9 @@
  * Supports the two transport variants documented in docs/protocols.md:
  *   - text  : console/USB CDC, lines "K2:IMG:<off>:<b64>" ... "K2:END:<len>"
  *             (the currently verified zero-wire link, k210_fw/main.py LINK=console)
+ *   - tcp   : same text stream relayed over TCP from the RK3588 edge hub
+ *             (rk3588_service/edge_hub.py), host:port via --tcp or
+ *             $PARK_UI_K210_TCP (default rk3588:8089)
  *   - binary: formal frame format of docs/protocols.md section 0/2 over a data
  *             UART: AA 55 | type | seq(2LE) | len(2LE) | payload | crc16(2LE)
  *             types used here: 0x01 preview chunk, 0x02 end-of-frame
@@ -33,7 +36,8 @@ public:
     ~K210Link() override;
 
     void start(const QString &dev, int baud, const QString &mode,
-               const QString &filePath);
+               const QString &filePath, const QString &tcpHost = QString(),
+               int tcpPort = 0);
     void stop();
 
     /* Returns true and moves the newest undisplayed frame into *out. */

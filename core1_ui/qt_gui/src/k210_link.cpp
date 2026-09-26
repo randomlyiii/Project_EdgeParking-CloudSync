@@ -13,7 +13,9 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <netdb.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 
 /* K210 camera mount orientation fix (DISPLAY side only).
  * FINAL (measured on the board 2026-09-11 with single-axis probes): NO
@@ -79,7 +81,13 @@ public:
 
     QString dev = "/dev/ttyACM0";
     int baud = 115200;
-    QString mode = "auto"; /* auto | text | binary | file | none */
+    /* auto | text | binary | file | none | tcp
+     * tcp: the K210 stream is relayed over TCP from the RK3588 edge hub
+     * (rk3588_service/edge_hub.py); tcpHost:tcpPort replace dev:baud and
+     * the text parser runs on the relayed byte stream unchanged. */
+    QString mode = "auto";
+    QString tcpHost = "rk3588";
+    int tcpPort = 8089;
     QString filePath;
     volatile bool stopFlag = false;
     int m_flip = K210_VIEW_FLIP;   /* resolved from env in run() */
@@ -142,6 +150,8 @@ private:
     void runFileMode();
     bool openSerial();
     void closeSerial();
+    bool openTcp();
+    void closeSocket();
 
     /* --- text parser state --- */
     QByteArray m_lineBuf;
@@ -177,8 +187,18 @@ private:
 
     /* --- fd --- */
     int m_fd = -1;
+    int m_sock = -1;
     bool m_up = false;
     bool m_openFailLogged = false;   /* one-shot: report a missing device once */
+
+    int linkFd() const { return mode == "tcp" ? m_sock : m_fd; }
+    void closeLink()
+    {
+        if (mode == "tcp")
+            closeSocket();
+        else
+            closeSerial();
+    }
 
     void publishJpeg(const QByteArray &jpeg)
     {
@@ -296,6 +316,74 @@ void K210LinkWorker::closeSerial()
     }
 }
 
+bool K210LinkWorker::openTcp()
+{
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *res = nullptr;
+    const QByteArray host = tcpHost.toUtf8();
+    const QByteArray port = QByteArray::number(tcpPort);
+    if (::getaddrinfo(host.constData(), port.constData(), &hints, &res) != 0)
+        return false;
+    int fd = -1;
+    for (struct addrinfo *p = res; p; p = p->ai_next)
+    {
+        fd = ::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (fd < 0)
+            continue;
+        /* non-blocking connect with a 2 s deadline, then back to a
+         * select-driven non-blocking read like the serial path */
+        const int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        const int rc = ::connect(fd, p->ai_addr, p->ai_addrlen);
+        if (rc != 0 && errno != EINPROGRESS)
+        {
+            ::close(fd);
+            fd = -1;
+            continue;
+        }
+        if (rc != 0)     /* EINPROGRESS */
+        {
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            timeval tv = {2, 0};
+            if (::select(fd + 1, nullptr, &wfds, nullptr, &tv) <= 0)
+            {
+                ::close(fd);
+                fd = -1;
+                continue;
+            }
+            int err = 0;
+            socklen_t len = sizeof(err);
+            if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0 ||
+                err != 0)
+            {
+                ::close(fd);
+                fd = -1;
+                continue;
+            }
+        }
+        break;
+    }
+    ::freeaddrinfo(res);
+    if (fd < 0)
+        return false;
+    m_sock = fd;
+    return true;
+}
+
+void K210LinkWorker::closeSocket()
+{
+    if (m_sock >= 0)
+    {
+        ::close(m_sock);
+        m_sock = -1;
+    }
+}
+
 void K210LinkWorker::run()
 {
     m_flip = flipModeFromEnv();
@@ -316,9 +404,10 @@ void K210LinkWorker::run()
     int errStreak = 0;
     while (!stopFlag)
     {
-        if (m_fd < 0)
+        if (linkFd() < 0)
         {
-            if (openSerial())
+            const bool ok = mode == "tcp" ? openTcp() : openSerial();
+            if (ok)
             {
                 errStreak = 0;
                 m_openFailLogged = false;
@@ -327,17 +416,20 @@ void K210LinkWorker::run()
             else
             {
                 setUp(false);
-                /* device may appear later (USB CDC hot-plug). Report the
-                 * failure ONCE in the journal: without this a missing
-                 * /dev/ttyACMn only shows up as "no preview" on the LCD,
-                 * which is indistinguishable from "K210 not sending". */
+                /* device/peer may appear later (USB CDC hot-plug, edge hub
+                 * restart). Report the failure ONCE in the journal. */
                 if (!m_openFailLogged)
                 {
                     m_openFailLogged = true;
-                    qWarning("k210 link: cannot open %s (%s) - retrying every 2s",
-                             qPrintable(dev), strerror(errno));
+                    if (mode == "tcp")
+                        qWarning("k210 link: cannot connect %s:%d - "
+                                 "retrying every 2s",
+                                 qPrintable(tcpHost), tcpPort);
+                    else
+                        qWarning("k210 link: cannot open %s (%s) - "
+                                 "retrying every 2s",
+                                 qPrintable(dev), strerror(errno));
                 }
-                /* device may appear later (USB CDC hot-plug) */
                 for (int i = 0; i < 20 && !stopFlag; ++i)
                     QThread::msleep(100);
                 continue;
@@ -346,14 +438,15 @@ void K210LinkWorker::run()
 
         fd_set rfds;
         FD_ZERO(&rfds);
-        FD_SET(m_fd, &rfds);
+        const int fd = linkFd();
+        FD_SET(fd, &rfds);
         timeval tv = {0, 100 * 1000}; /* 100 ms */
-        int r = ::select(m_fd + 1, &rfds, nullptr, nullptr, &tv);
+        int r = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (r < 0)
         {
             if (errno == EINTR)
                 continue;
-            closeSerial();
+            closeLink();
             setUp(false);
             continue;
         }
@@ -361,7 +454,7 @@ void K210LinkWorker::run()
             continue; /* idle; link freshness judged by data */
 
         quint8 buf[4096];
-        int n = int(::read(m_fd, buf, sizeof(buf)));
+        int n = int(::read(fd, buf, sizeof(buf)));
         if (n > 0)
         {
             errStreak = 0;
@@ -371,20 +464,20 @@ void K210LinkWorker::run()
         {
             if (++errStreak > 5)
             {
-                closeSerial();
+                closeLink();
                 setUp(false);
             }
         }
         else if (n == 0)
         {
             if (++errStreak > 5)
-            { /* CDC detached */
-                closeSerial();
+            { /* CDC detached / peer closed */
+                closeLink();
                 setUp(false);
             }
         }
     }
-    closeSerial();
+    closeLink();
     setUp(false);
 }
 
@@ -429,10 +522,20 @@ void K210LinkWorker::runFileMode()
 
 void K210LinkWorker::feed(const QByteArray &bytes)
 {
-    if (mode != "binary")
-        feedText(bytes);
-    if (mode != "text")
+    /* tcp relays the console text stream; binary frames never appear on it */
+    if (mode == "binary")
+    {
         feedBinary(bytes);
+        return;
+    }
+    if (mode == "tcp" || mode == "text")
+    {
+        feedText(bytes);
+        return;
+    }
+    /* auto: console text and binary frames share the wire; try both */
+    feedText(bytes);
+    feedBinary(bytes);
 }
 
 /* ---- text channel: "K2:IMG:<off>:<b64>" ... "K2:END:<b64len>" ---- */
@@ -682,7 +785,8 @@ K210Link::~K210Link()
 }
 
 void K210Link::start(const QString &dev, int baud, const QString &mode,
-                     const QString &filePath)
+                     const QString &filePath, const QString &tcpHost,
+                     int tcpPort)
 {
     if (m_started)
         return;
@@ -691,6 +795,8 @@ void K210Link::start(const QString &dev, int baud, const QString &mode,
     m_worker->baud = baud;
     m_worker->mode = mode;
     m_worker->filePath = filePath;
+    m_worker->tcpHost = tcpHost;
+    m_worker->tcpPort = tcpPort;
     QMetaObject::invokeMethod(m_worker, "startRun", Qt::QueuedConnection);
 }
 

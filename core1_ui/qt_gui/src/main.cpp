@@ -84,6 +84,9 @@ int main(int argc, char *argv[])
     QCommandLineOption optFile(QStringList() << "f" << "file",
                                "image file or directory for --mode file",
                                "path");
+    QCommandLineOption optTcp(QStringList() << "t" << "tcp",
+                              "edge hub host:port (default $PARK_UI_K210_TCP "
+                              "or rk3588:8089; sets --mode tcp)", "host:port");
     QCommandLineOption optDemo("demo",
                                "demo mode: on|off|auto (default auto = "
                                "simulate when /park_shm absent)", "demo");
@@ -91,7 +94,7 @@ int main(int argc, char *argv[])
                               "pre-opened eventfd number for IPC state "
                               "events (P6-02), -1 = poll shm (default)", "fd",
                               "-1");
-    cli.addOptions({optDev, optBaud, optMode, optFile, optDemo, optEvt});
+    cli.addOptions({optDev, optBaud, optMode, optFile, optTcp, optDemo, optEvt});
     cli.process(app);
 
     const QString dev = cli.value(optDev).isEmpty()
@@ -103,6 +106,35 @@ int main(int argc, char *argv[])
     if (mode.isEmpty())
         mode = "auto";
     const QString file = cli.value(optFile);
+    /* Edge relay endpoint: --tcp wins, then $PARK_UI_K210_TCP, then the
+     * conventional rk3588:8089. Giving --tcp (or a non-empty env) switches
+     * the link to tcp mode unless --mode says otherwise explicitly. */
+    QString tcp = cli.value(optTcp);
+    if (tcp.isEmpty())
+        tcp = qEnvironmentVariable("PARK_UI_K210_TCP", "rk3588:8089");
+    QString tcpHost = "rk3588";
+    int tcpPort = 8089;
+    {
+        const int colon = tcp.lastIndexOf(QLatin1Char(':'));
+        if (colon > 0)
+        {
+            tcpHost = tcp.left(colon);
+            tcpPort = tcp.mid(colon + 1).toInt();
+            if (tcpPort <= 0)
+                tcpPort = 8089;
+        }
+        else if (!tcp.isEmpty())
+        {
+            tcpHost = tcp;
+        }
+    }
+    /* Default uplink is the RK3588 edge hub relay; an explicitly EMPTY
+     * PARK_UI_K210_TCP (= "") is the escape hatch back to local serial. */
+    if (mode == "auto")
+        mode = (qEnvironmentVariableIsSet("PARK_UI_K210_TCP") &&
+                qEnvironmentVariable("PARK_UI_K210_TCP").isEmpty())
+                   ? QStringLiteral("auto")
+                   : QStringLiteral("tcp");
     /* Careful: a missing --eventfd must NOT become fd 0 (stdin): under systemd
      * stdin is /dev/null, always readable, and a QSocketNotifier on it spins a
      * core. The option carries an explicit "-1" default for this reason. */
@@ -175,7 +207,7 @@ int main(int argc, char *argv[])
 
     ipc.start(demoMode, evtFd);
     writer.start();
-    link.start(dev, baud, mode, file);
+    link.start(dev, baud, mode, file, tcpHost, tcpPort);
 
     /* ===================== step 7: cloud + network =====================
      * Everything cloud related lives in Core1 only (PhaseMd/08: Core0 is
