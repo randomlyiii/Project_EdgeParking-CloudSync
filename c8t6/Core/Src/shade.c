@@ -75,14 +75,25 @@ int8_t Shade_FSM_Update(uint16_t lux)
 
   if (s_state == SHADE_CLEAR)
   {
-    /* 基线跟踪只在 CLEAR 态做：变亮快速跟上，慢漂移 EMA 平滑 */
+    /* 基线跟踪只在 CLEAR 态做。
+     * P4(2026-09-27 审计)：上行限幅——瞬时尖峰（对向车灯/反光/手电）不再
+     * 一拍抬满基线（ratchet），真变亮约 10~20 拍跟上，可接受。
+     * P3：下行自适应 EMA——疑似有车（掉点 ≥ 半阈）用慢 EMA 保慢车灵敏度；
+     * 明显无车（掉点 < 半阈，纯环境光阶跃）用快 EMA，1~2s 内收敛，
+     * 消除"灯光突灭 -> ~10s 假 PRESENCE"的误报窗口。 */
+    uint32_t dth = (uint32_t)Shade_GetDropThreshold();
     if ((float)lux >= s_baseline)
     {
-      s_baseline = (float)lux;
+      float step = s_baseline * 0.125f + 1.0f;
+      float diff = (float)lux - s_baseline;
+      s_baseline += (diff <= step) ? diff : step;
     }
     else
     {
-      s_baseline = (s_baseline * 15.0f + (float)lux) / 16.0f;
+      int32_t d = (int32_t)((s_baseline - (float)lux) * 100.0f /
+                            s_baseline);
+      float k = (d >= (int32_t)(dth / 2)) ? 16.0f : 4.0f;
+      s_baseline = (s_baseline * (k - 1.0f) + (float)lux) / k;
     }
   }
   /* SHADED 态基线冻结：遮住期间不塌陷，恢复判定只看当前 lux 与旧基线 */
