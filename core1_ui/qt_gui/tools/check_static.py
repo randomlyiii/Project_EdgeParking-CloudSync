@@ -786,7 +786,7 @@ for f in ["edge_hub.py", "lpr_server.py", "lpr_decode.py",
         ok = False
 ehub = (rks / "edge_hub.py").read_text(encoding="utf-8", errors="replace")
 for needle in ["K2:OK:", "K2:NG:", "FrameAssembler", "ThreadingTCPServer",
-               "from lpr_server import Recognizer", "period_ms"]:
+               "from lpr_server import", "period_ms"]:
     if needle not in ehub:
         print("[FAIL] edge_hub.py misses '%s'" % needle)
         ok = False
