@@ -77,6 +77,7 @@ MainWindow::MainWindow(QWidget *parent)
      * decoded frame). 60 ms ~ 15 fps, matching the edge hub relay
      * (--relay-fps 15); 100 ms (=10 fps) was the K210-serial era. */
     m_frameTimer.start(60);
+    m_upTimer.start();              /* uptime chip (2026-09-27) */
     m_clockTimer.start(1000);
     m_tickerTimer.start(4000);
     onClock();
@@ -167,6 +168,8 @@ void MainWindow::buildUi()
     m_lblCloud = statusChip(statusBar);
     m_lblFps = statusChip(statusBar);
     m_lblFps->setText(QStringLiteral("FPS:--"));
+    m_lblUp = statusChip(statusBar);
+    m_lblUp->setText(QStringLiteral("UP --:--:--"));
     m_lblClock = statusChip(statusBar);
     sb->addWidget(m_lblSys);
     sb->addWidget(m_lblRpmsg);
@@ -175,6 +178,7 @@ void MainWindow::buildUi()
     sb->addWidget(m_lblWifi);
     sb->addWidget(m_lblCloud);
     sb->addWidget(m_lblFps);
+    sb->addWidget(m_lblUp);
     sb->addStretch(1);
     /* step 7: gear -> full-screen settings page (cloud / wifi / diagnostics) */
     m_btnSettings = new QPushButton(QStringLiteral("SET"), statusBar);
@@ -398,6 +402,20 @@ void MainWindow::onFrameTick()
 void MainWindow::onClock()
 {
     m_lblClock->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
+
+    /* process uptime chip: hours are not wrapped at 24 ("UP 26:03:15"),
+     * days get a compact "UP 3d04:05" form once 100 hours are exceeded */
+    const qint64 upS = m_upTimer.elapsed() / 1000;
+    if (upS < 360000)
+        m_lblUp->setText(QStringLiteral("UP %1:%2:%3")
+                         .arg(upS / 3600, 2, 10, QLatin1Char('0'))
+                         .arg((upS / 60) % 60, 2, 10, QLatin1Char('0'))
+                         .arg(upS % 60, 2, 10, QLatin1Char('0')));
+    else
+        m_lblUp->setText(QStringLiteral("UP %1d%2:%3")
+                         .arg(upS / 86400)
+                         .arg((upS / 3600) % 24, 2, 10, QLatin1Char('0'))
+                         .arg((upS / 60) % 60, 2, 10, QLatin1Char('0')));
 }
 
 void MainWindow::onTicker()

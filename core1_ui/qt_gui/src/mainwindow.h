@@ -16,6 +16,7 @@
 #include <QImage>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QElapsedTimer>
 #include <QShowEvent>
 #include <QTimer>
 #include <QVector>
@@ -89,6 +90,8 @@ private:
     QLabel *m_lblCore1 = nullptr;
     QLabel *m_lblCloud = nullptr;
     QLabel *m_lblFps = nullptr;         /* decoded preview rate (2026-09-26) */
+    QLabel *m_lblUp = nullptr;          /* process uptime (2026-09-27) */
+    QElapsedTimer m_upTimer;            /* started in the ctor */
     QLabel *m_lblWifi = nullptr;        /* step 7: wlan0 link state */
     QLabel *m_lblClock = nullptr;
     CloudState m_cloudState = Unknown;
