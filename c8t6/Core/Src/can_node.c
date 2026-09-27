@@ -164,7 +164,8 @@ static void CAN_BuildHbPayload(uint8_t *d, uint32_t now)
 
 /* 0x110 回执由主端(M4)发, 本节点只收(见 can_node.h 的说明) —— 此处不再有发回执的代码。 */
 
-void CAN_Node_Init(void)
+/* 配置滤波器并启动 CAN。返回 HAL_OK = 成功（P6：供初始化和失败重试共用） */
+static HAL_StatusTypeDef CAN_ConfigFilterAndStart(void)
 {
   CAN_FilterTypeDef f;
   HAL_StatusTypeDef st;
@@ -188,15 +189,47 @@ void CAN_Node_Init(void)
   {
     st = HAL_CAN_Start(&hcan);   /* 有超时保护; 总线异常时不阻塞, 返回错误 */
   }
+  return st;
+}
+
+/* P6（2026-09-27 审计）: Start 失败终身失联无自愈（BH1750 有连续失败重初始化，
+ * CAN 反而没有）。周期性重试：失败 10s 后 Stop+重配+Start，成功补发 0x05。 */
+#define CAN_START_RETRY_MS 10000u
+static uint8_t  s_start_failed      = 0u;
+static uint32_t s_start_failed_tick = 0u;
+
+void CAN_Node_Init(void)
+{
+  HAL_StatusTypeDef st = CAN_ConfigFilterAndStart();
+
   if (st != HAL_OK)
   {
-    s_tx_err = 1u;   /* 链路起不来 => OLED CAN:ERR / 状态位 bit3 */
+    s_tx_err = 1u;              /* 链路起不来 => OLED CAN:ERR / 状态位 bit3 */
+    s_start_failed = 1u;
+    s_start_failed_tick = osKernelGetTickCount();
   }
 }
 
 void CAN_Node_Poll(void)
 {
   uint32_t now = osKernelGetTickCount();
+
+  /* ---- P6: Start 失败自愈重试（见 CAN_Node_Init 处注释） ---- */
+  if ((s_start_failed != 0u) &&
+      ((now - s_start_failed_tick) >= CAN_START_RETRY_MS))
+  {
+    HAL_StatusTypeDef rst;
+    s_start_failed_tick = now;
+    (void)HAL_CAN_Stop(&hcan);
+    rst = CAN_ConfigFilterAndStart();
+    if (rst == HAL_OK)
+    {
+      s_start_failed = 0u;
+      s_tx_err = 0u;
+      s_ready_sent = 0u;                 /* 成功：重发 0x05 就绪 */
+      (void)CAN_Node_SendEventRetry(CAN_EVT_NODE_READY, 0u);
+    }
+  }
 
   /* 道闸缓动步进(10ms 节拍; 目标由下方 0x100 OPEN/CLOSE case 通过 Gate_SetTarget 设置) */
   Gate_Poll();

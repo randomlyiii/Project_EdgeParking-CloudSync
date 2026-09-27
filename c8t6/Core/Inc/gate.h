@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* 上电自检: 1=Gate_Init 时执行 0°→90°→0°(验接线/供电); 稳定后置 0 */
-#define GATE_SELFTEST      1u
+#define GATE_SELFTEST      0u
 
 /* Gate_Poll 单次位移(µs)。10ms 节拍 ×50µs → 满行程 1000µs ≈ 0.2s,
    缓动避免 CCR 突变引舵机抖动啸叫 */
