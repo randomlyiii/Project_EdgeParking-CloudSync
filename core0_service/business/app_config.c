@@ -114,6 +114,12 @@ int app_config_load(const app_config_t *base, app_config_t *out,
         return 0;
     }
 
+    /* The file is authoritative for the whitelist: never inherit the base
+     * table, or every hot reload appends the in-memory entries again and
+     * the table fills up (audit 2026-09-27). Deleting an entry from the
+     * file now actually removes it. */
+    wl_init(&out->wl);
+
     while (fgets(line, sizeof(line), fp) != NULL) {
         char *s = line;
         lineno++;
