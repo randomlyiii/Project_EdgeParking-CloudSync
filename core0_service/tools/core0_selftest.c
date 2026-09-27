@@ -645,6 +645,34 @@ static void s11_dup_arrive(void)
     biz_destroy(b);
 }
 
+static void s15_deferred_catchup(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S15 deferred arrive during cooldown is picked up "
+           "(audit 2026-09-27)\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1500000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1500000);
+    post_result(b, PLATE_BAD, 0.90f, 0, 1500100);   /* deny -> cooldown */
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 1500200);        /* A leaves */
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1500300);       /* B arrives while busy */
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);        /* deferred, no trigger */
+    CHECK(fk.notify_01 == 1);
+    periodic_alive(b, &fk, 1504200, 0);             /* cooldown elapsed */
+    CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);      /* B gets its turn */
+    CHECK(fk.notify_01 == 2);
+
+    biz_destroy(b);
+}
+
 static void s12_link_fault(void)
 {
     app_config_t cfg;
@@ -800,6 +828,7 @@ int main(void)
     s9_slots_clamp();
     s10_config();
     s11_dup_arrive();
+    s15_deferred_catchup();
     s12_link_fault();
     s13_log_and_storage();
     s14_node_gate_event();

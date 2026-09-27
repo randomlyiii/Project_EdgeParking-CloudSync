@@ -79,6 +79,8 @@ struct biz {
     int32_t     used;
     uint8_t     presence;          /* node reports a vehicle in the zone */
     uint8_t     pass_pending;
+    uint8_t     arrive_deferred;   /* an arrive was dropped while busy; picked
+                                    * up at the end of the cooldown */
 
     /* health / fault bits */
     uint8_t     link_up;
@@ -247,25 +249,8 @@ static int gate_cmd(biz_t *b, int open, const char *source)
 /* ------------------------------------------------------------------ */
 /* event handlers                                                      */
 
-static void on_car_arrive(biz_t *b)
+static void start_recognition(biz_t *b)
 {
-    if (b->presence) {
-        LOGI("node", "duplicate arrive while already present, ignored");
-        return;
-    }
-    b->presence = 1;
-    LOGI("node", "car arrival observed (node event 0x01 CAR_ARRIVE)");
-
-    if (b->st != BIZ_ST_IDLE) {
-        /* spec 5.1.3.2: no double registration / double trigger */
-        LOGW("node", "busy in %s: duplicate registration ignored",
-             biz_state_name(b->st));
-        return;
-    }
-
-    to_state(b, BIZ_ST_CAR_WAIT, "node event 0x01 CAR_ARRIVE");
-    store_event("car_arrive", "", "");
-
     if (!b->core1_alive) {
         /* spec 5.2.1.5: core1 lost -> straight to downgrade path */
         LOGW("biz", "core1 offline at registration: skip recognition");
@@ -282,6 +267,30 @@ static void on_car_arrive(biz_t *b)
     if (b->plat.notify_core1 != NULL)
         b->plat.notify_core1(b->plat.ctx, 0x01);
     to_state(b, BIZ_ST_RECOGNIZING, "recog_pending=1, trigger 0x01 sent");
+}
+
+static void on_car_arrive(biz_t *b)
+{
+    if (b->presence) {
+        LOGI("node", "duplicate arrive while already present, ignored");
+        return;
+    }
+    b->presence = 1;
+    LOGI("node", "car arrival observed (node event 0x01 CAR_ARRIVE)");
+
+    if (b->st != BIZ_ST_IDLE) {
+        /* spec 5.1.3.2: no double registration / double trigger; the
+         * arrival is remembered and picked up when the cooldown ends
+         * (audit 2026-09-27: it used to be lost) */
+        LOGW("node", "busy in %s: registration deferred to cooldown end",
+             biz_state_name(b->st));
+        b->arrive_deferred = 1;
+        return;
+    }
+
+    to_state(b, BIZ_ST_CAR_WAIT, "node event 0x01 CAR_ARRIVE");
+    store_event("car_arrive", "", "");
+    start_recognition(b);
 }
 
 static void on_car_leave(biz_t *b)
@@ -577,8 +586,20 @@ void biz_periodic(biz_t *b, int64_t now_ms, const biz_poll_in_t *in)
     }
 
     /* ---- cooldown expiry ---- */
-    if (b->st == BIZ_ST_COOL_DOWN && b->now >= b->cool_deadline)
+    if (b->st == BIZ_ST_COOL_DOWN && b->now >= b->cool_deadline) {
         to_state(b, BIZ_ST_IDLE, "cooldown elapsed");
+        /* a car that arrived during the cooldown had its registration
+         * deferred (see on_car_arrive); if it is still on the sensor, it
+         * now gets the recognition that was dropped (audit 2026-09-27) */
+        if (b->presence && b->arrive_deferred) {
+            b->arrive_deferred = 0;
+            LOGI("node", "car present since cooldown: catching up "
+                 "with the deferred recognition");
+            to_state(b, BIZ_ST_CAR_WAIT, "deferred registration");
+            store_event("car_arrive", "", "deferred");
+            start_recognition(b);
+        }
+    }
 }
 
 biz_state_t biz_state(const biz_t *b)
