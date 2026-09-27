@@ -60,7 +60,7 @@ void ipc_shm_publish(park_shm_t *s, const park_shm_t *fields)
     s->seq++;                       /* begin update */
     __sync_synchronize();
 
-    /* core0-owned fields only (see header comment) */
+    /* core0-owned fields (see header comment) */
     s->free_slots     = fields->free_slots;
     s->used_slots     = fields->used_slots;
     s->gate_state     = fields->gate_state;
@@ -68,9 +68,16 @@ void ipc_shm_publish(park_shm_t *s, const park_shm_t *fields)
     s->recog_pending  = fields->recog_pending;
     s->fault_bits     = fields->fault_bits;
     s->conf_threshold = fields->conf_threshold;
-    memcpy((void *)s->plate, fields->plate, sizeof(s->plate));
-    s->confidence     = fields->confidence;
-    s->result_source  = fields->result_source;
+
+    /* plate/confidence/result_source are Core1-owned (the pending result).
+     * While a result is waiting for consumption a publish refresh must not
+     * overwrite it, otherwise a late refresh swaps the pending plate for
+     * the previously published one (audit 2026-09-27). */
+    if (!s->result_valid) {
+        memcpy((void *)s->plate, fields->plate, sizeof(s->plate));
+        s->confidence     = fields->confidence;
+        s->result_source  = fields->result_source;
+    }
 
     __sync_synchronize();
     s->seq++;                       /* end update */

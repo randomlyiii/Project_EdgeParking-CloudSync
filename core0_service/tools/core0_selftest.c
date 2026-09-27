@@ -620,6 +620,8 @@ static void s10_config(void)
     CHECK(rc == 0);
     CHECK(out.total_slots == 30);            /* kept previous */
     CHECK(out.recog_timeout_ms == 3000);     /* kept previous */
+    CHECK(wl_count(&out.wl) == 0);           /* whitelist rebuilt from file,
+                                                never inherited on reload */
     remove("st_core0.conf");
 }
 
