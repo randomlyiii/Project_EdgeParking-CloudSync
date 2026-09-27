@@ -57,7 +57,7 @@ volatile CAN_NodeDbg_t g_can_node_dbg;
 static uint8_t StatusBits_Calc(void)
 {
   uint8_t b = 0u;
-  if (Gate_IsOpen())        b |= CAN_STAT_GATE_OPEN;      /* 执行到位(真实闸位, 非指令态) */
+  if (Gate_IsSettledOpen()) b |= CAN_STAT_GATE_OPEN;      /* P1: 执行到位=位置到+缓动停(原 Gate_IsOpen 关方向提前 ~190ms) */
   if (Shade_IsShaded())     b |= CAN_STAT_PRESENCE;       /* 检测区有车/物体 */
   if (Shade_SensorFault())  b |= CAN_STAT_SENSOR_FAULT;
   if (s_tx_err)             b |= CAN_STAT_CAN_ERR;
@@ -173,18 +173,19 @@ void CAN_Node_Poll(void)
      只在"真实到位状态"翻转时发一次(缓动途中不发)，主端/A7 因此无需轮询就能
      拿到闸的真实位置；首拍只建基线(上电时闸在关位，不必上报)。 */
   {
-    uint8_t g = Gate_IsOpen() ? 1u : 0u;
+    uint8_t g = Gate_IsSettledOpen() ? 1u : 0u;   /* P1: 到位语义，缓动途中不翻转 */
     if (s_gate_latched == 0xFFu)
-    {
-      s_gate_latched = g;
-    }
-    else if (g != s_gate_latched)
     {
       s_gate_latched = g;
       if (CAN_Node_SendEvent(CAN_EVT_GATE_STATE, (uint16_t)g) == 0u)
       {
         g_can_node_dbg.gate_evts++;
       }
+    }
+    else if (g != s_gate_latched)
+    {
+      s_gate_latched = g;
+
     }
   }
 

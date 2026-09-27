@@ -94,6 +94,14 @@ uint8_t Gate_IsOpen(void)
   return (s_cur_ccr >= GATE_OPEN_CCR) ? 1u : 0u;
 }
 
+uint8_t Gate_IsSettledOpen(void)
+{
+  /* P1（2026-09-27 审计）: "执行到位"语义 = 位置到 AND 缓动停。
+   * Gate_IsOpen() 只看 CCR：开方向到位才变 1（正确），但关方向第一步
+   * 就变 0——0x04(arg=0) 会提前 ~190ms 撒谎。上报/状态位一律用本函数。 */
+  return ((s_cur_ccr >= GATE_OPEN_CCR) && (s_moving == 0u)) ? 1u : 0u;
+}
+
 uint8_t Gate_IsMoving(void)
 {
   return s_moving;
