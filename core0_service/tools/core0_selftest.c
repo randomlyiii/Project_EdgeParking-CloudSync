@@ -136,6 +136,15 @@ static void post_link(biz_t *b, int up, int64_t now)
     biz_post(b, &ev, now);
 }
 
+static void post_node_state(biz_t *b, int online, int64_t now)
+{
+    biz_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = BIZ_EV_NODE_STATE;
+    ev.b0 = online ? 1 : 0;
+    biz_post(b, &ev, now);
+}
+
 static void post_m4(biz_t *b, int gate, int node, int err, int64_t now)
 {
     biz_event_t ev;
@@ -724,6 +733,34 @@ static void s17_leave_cancels_window(void)
     biz_destroy(b);
 }
 
+static void s18_offline_heals_presence(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S18 node offline heals stale presence\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1800000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1800000);
+    CHECK(fk.notify_01 == 1);
+    post_node_state(b, 0, 1800500);             /* node offline: heal */
+    post_node_state(b, 1, 1800600);             /* back online */
+    /* 真实时序分拍推进：先让在途识别走完 timeout->deny（deadline 被
+     * 设在推进时刻），再推进过冷却，下一辆车才进场 */
+    periodic_alive(b, &fk, 1803001, 0);         /* timeout -> DENY */
+    periodic_alive(b, &fk, 1807002, 0);         /* cooldown -> IDLE */
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1807003);   /* must be a NEW arrival */
+    CHECK(fk.notify_01 == 2);
+    CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
+
+    biz_destroy(b);
+}
+
 static void s12_link_fault(void)
 {
     app_config_t cfg;
@@ -882,6 +919,7 @@ int main(void)
     s15_deferred_catchup();
     s16_gate_open_fail();
     s17_leave_cancels_window();
+    s18_offline_heals_presence();
     s12_link_fault();
     s13_log_and_storage();
     s14_node_gate_event();

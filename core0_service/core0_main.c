@@ -233,7 +233,9 @@ static void decode_frame(const rpmsg_frame_t *fr, void *opaque)
     }
     case RPMSG_RX_NODE_STATE:
         ev.type = BIZ_EV_NODE_STATE;
-        ev.b0 = (uint8_t)(rpmsg_decode_node_state(fr) == 0 ? 0u : 1u);
+        /* payload[0]!=0 = online；解码失败(-1)按离线处理（审计 2026-09-27：
+         * 原映射成 online=1，坏帧会把离线节点伪装成在线） */
+        ev.b0 = (rpmsg_decode_node_state(fr) == 1) ? 1u : 0u;
         queue_push(q, &ev);
         break;
     case RPMSG_RX_M4_STATE: {

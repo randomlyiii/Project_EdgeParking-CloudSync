@@ -458,6 +458,17 @@ static void on_link(biz_t *b, const biz_event_t *ev)
 static void on_node_state(biz_t *b, const biz_event_t *ev)
 {
     b->node_online = ev->b0 ? 1u : 0u;
+    if (!b->node_online) {
+        /* audit 2026-09-27: a rebooted/offline node never re-sends its
+         * edges; the stale presence would block every future arrival until
+         * core0 restarts (recognition deadlock). pass_pending is kept:
+         * the gate side is reconciled via the periodic 0x23. */
+        if (b->presence || b->arrive_deferred) {
+            LOGW("node", "node offline: clearing stale presence/deferred");
+            b->presence = 0;
+            b->arrive_deferred = 0;
+        }
+    }
     refresh_public(b);
 }
 
