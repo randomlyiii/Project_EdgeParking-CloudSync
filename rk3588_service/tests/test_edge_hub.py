@@ -210,6 +210,77 @@ class TestRecogThread(unittest.TestCase):
         self.assertGreater(len(ok), 1)          # legacy: every cycle emits
 
 
+class FakeWatch(object):
+    """Controllable motion watch stand-in."""
+
+    def __init__(self):
+        self.motion = True
+
+    def motion_recent(self):
+        return self.motion
+
+
+class CountingRecognizer(object):
+    def __init__(self, plate="\u7ca4B12345"):
+        self._plate = plate
+        self.calls = 0
+
+    def plate(self, jpeg):
+        self.calls += 1
+        if not self._plate:
+            return "", 0.0, {}
+        return self._plate, 0.99, {}
+
+
+class TestMotionGate(unittest.TestCase):
+    def _thread(self, watch, votes=1, plate="\u7ca4B12345"):
+        hub = FakeHub()
+        latest = {"jpeg": JPEG_DUMMY,
+                  "at": int(time.time() * 1000)}
+        recog = CountingRecognizer(plate)
+        thread = edge_hub.RecogThread(hub, latest, recog,
+                                      period_ms=50, fresh_ms=60000,
+                                      min_conf=0.7, votes=votes, watch=watch)
+        return hub, recog, thread
+
+    def test_static_scene_sleeps_and_motion_wakes(self):
+        watch = FakeWatch()
+        _hub, recog, thread = self._thread(watch)
+        thread.start()
+        try:
+            time.sleep(0.5)
+            calls_moving = recog.calls
+            self.assertGreater(calls_moving, 2)
+            watch.motion = False
+            time.sleep(0.5)
+            calls_asleep = recog.calls
+            time.sleep(0.5)
+            self.assertEqual(recog.calls, calls_asleep)  # frozen while static
+            watch.motion = True
+            time.sleep(0.4)
+            self.assertGreater(recog.calls, calls_asleep)  # motion resumes
+        finally:
+            thread.stop()
+            thread.join(timeout=2)
+
+    def test_pending_candidate_pins_recognizer_awake(self):
+        # the danger scenario: motion stops while the vote is mid-confirmation
+        # (1 of N) - the gate must NOT freeze the vote before the OK pops.
+        watch = FakeWatch()
+        hub, recog, thread = self._thread(watch, votes=3)
+        thread.start()
+        try:
+            time.sleep(0.12)                 # cycle 1 sees the candidate
+            watch.motion = False             # scene goes static, vote at 1/3
+            time.sleep(0.8)
+        finally:
+            thread.stop()
+            thread.join(timeout=2)
+        ok = [l for l in hub.lines if l.startswith("K2:OK:")]
+        self.assertEqual(len(ok), 1)         # vote completed despite static
+        self.assertGreaterEqual(recog.calls, 3)
+
+
 class TestLineHubTcp(unittest.TestCase):
     def test_relay_over_tcp(self):
         hub = edge_hub.LineHub(max_queue=8)

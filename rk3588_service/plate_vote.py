@@ -47,3 +47,9 @@ class PlateVoter(object):
             # same plate triggers a fresh OK
             self._emitted = ""
         return None
+
+    def has_pending(self):
+        """A candidate is mid-confirmation (seen but not yet emitted).
+        RecogThread uses this to override the scene gate: sleeping now
+        would freeze the vote at 1/N and the OK card would never pop."""
+        return bool(self._pending) and self._pending != self._emitted

@@ -68,6 +68,16 @@ class TestPlateVoter(unittest.TestCase):
         # plate still present after a 2-frame NG blink: no re-vote needed
         self.assertIsNone(v.update("chuanA88888"))
 
+    def test_has_pending(self):
+        v = plate_vote.PlateVoter(votes=2)
+        self.assertFalse(v.has_pending())           # nothing seen yet
+        v.update("chuanA88888")
+        self.assertTrue(v.has_pending())            # 1 of 2 votes
+        self.assertEqual(v.update("chuanA88888"), "chuanA88888")
+        self.assertFalse(v.has_pending())           # emitted -> may sleep
+        v.update("")
+        self.assertFalse(v.has_pending())
+
 
 if __name__ == "__main__":
     unittest.main()

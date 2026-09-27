@@ -33,6 +33,7 @@ import time
 from socketserver import StreamRequestHandler, ThreadingTCPServer
 
 import lpr_decode
+import motion_watch
 import plate_vote
 from lpr_server import HyperLpr3Recognizer, Recognizer, TwoStageRecognizer
 
@@ -182,6 +183,25 @@ def jpeg_to_k2_lines(jpeg, chunk=900):
     return lines
 
 
+def frame_signature(jpeg_bytes, size=(64, 48)):
+    """Down-sampled grayscale signature for the motion watch
+    (None = undecodable). Used by the K210 line-source path."""
+    import cv2
+    import numpy as np
+    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    return cv2.resize(img, size)
+
+
+def feed_watch_bgr(watch, frame, size=(64, 48)):
+    """Feed a captured BGR frame into the watch (local camera path)."""
+    import cv2
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    watch.feed(cv2.resize(gray, size))
+
+
 class CameraThread(threading.Thread):
     """Local V4L2 camera source (--source /dev/videoN).
 
@@ -192,7 +212,7 @@ class CameraThread(threading.Thread):
     """
 
     def __init__(self, hub, latest, device, width, height, cam_fps,
-                 relay_fps, jpeg_quality, roi=None):
+                 relay_fps, jpeg_quality, roi=None, watch=None):
         super(CameraThread, self).__init__(daemon=True)
         self._hub = hub
         self._latest = latest
@@ -203,6 +223,7 @@ class CameraThread(threading.Thread):
         self._relayEvery = max(1, int(round(float(cam_fps) /
                                             max(1, relay_fps))))
         self._quality = jpeg_quality
+        self._watch = watch
         # draw the ROI rectangle into the RELAYED frame (not the one the
         # recognizer eats), so the LCD shows exactly what the crop covers.
         self._drawBox = None
@@ -244,6 +265,8 @@ class CameraThread(threading.Thread):
                     if not ok:
                         break
                     got += 1
+                    if self._watch is not None:
+                        feed_watch_bgr(self._watch, frame)
                     r, buf = cv2.imencode(
                         ".jpg", frame,
                         [cv2.IMWRITE_JPEG_QUALITY, self._quality])
@@ -289,12 +312,13 @@ class CameraThread(threading.Thread):
 class ReaderThread(threading.Thread):
     """tty -> broadcast lines; assembled JPEGs -> latest slot."""
 
-    def __init__(self, hub, latest, dev, baud):
+    def __init__(self, hub, latest, dev, baud, watch=None):
         super(ReaderThread, self).__init__(daemon=True)
         self._hub = hub
         self._latest = latest        # dict slot: {"jpeg": bytes, "at": ms}
         self._dev = dev
         self._baud = baud
+        self._watch = watch
         self._stop = threading.Event()
 
     def stop(self):
@@ -346,6 +370,10 @@ class ReaderThread(threading.Thread):
                 if jpeg:
                     self._latest["jpeg"] = jpeg
                     self._latest["at"] = int(time.time() * 1000)
+                    if self._watch is not None:
+                        sig = frame_signature(jpeg)
+                        if sig is not None:
+                            self._watch.feed(sig)
         if fd >= 0:
             os.close(fd)
 
@@ -361,7 +389,7 @@ class RecogThread(threading.Thread):
     """
 
     def __init__(self, hub, latest, recognizer, period_ms, fresh_ms,
-                 min_conf, min_chars=5, votes=1, ng_reset=3):
+                 min_conf, min_chars=5, votes=1, ng_reset=3, watch=None):
         super(RecogThread, self).__init__(daemon=True)
         self._hub = hub
         self._latest = latest
@@ -376,10 +404,18 @@ class RecogThread(threading.Thread):
         self._voter = None
         if votes and votes > 1:
             self._voter = plate_vote.PlateVoter(votes, ng_reset)
+        self._watch = watch
+        self._idle = False
+        self._idle_log_at = 0.0
         self._stop = threading.Event()
 
     def stop(self):
         self._stop.set()
+
+    def _pending_active(self):
+        """Mid-confirmation candidate (seen but not yet emitted) - pins the
+        recognizer awake so the vote can complete."""
+        return self._voter is not None and self._voter.has_pending()
 
     def run(self):
         while not self._stop.wait(self._period):
@@ -387,6 +423,24 @@ class RecogThread(threading.Thread):
             at = self._latest.get("at", 0)
             if not jpeg or int(time.time() * 1000) - at > self._fresh:
                 continue
+            # motion gate: sleep while the camera scene is static - an empty
+            # spot needs no recognition. A mid-vote pending candidate pins
+            # the recognizer awake (sleeping would freeze the vote at 1/N
+            # and the OK card would never pop).
+            if (self._watch is not None
+                    and not self._watch.motion_recent()
+                    and not self._pending_active()):
+                now = time.time()
+                if not self._idle:
+                    self._idle = True
+                    print("recog: idle (scene static)", flush=True)
+                elif now - self._idle_log_at >= 30.0:
+                    print("recog: idle", flush=True)
+                self._idle_log_at = now
+                continue
+            if self._idle:
+                self._idle = False
+                print("recog: wake (motion)", flush=True)
             try:
                 t0 = time.time()
                 result = self._recognizer.plate(jpeg)
@@ -498,6 +552,13 @@ def main(argv=None):
     ap.add_argument("--ng-reset", type=int, default=3,
                     help="consecutive NG cycles after which the voter "
                          "re-arms and a returning plate re-triggers OK")
+    ap.add_argument("--motion-threshold", type=float, default=2.0,
+                    help="frame mean-absolute-diff above this counts as "
+                         "motion; the recognizer sleeps while the camera "
+                         "scene stays static (saves engine cycles on an "
+                         "empty spot). 0 disables the motion watch")
+    ap.add_argument("--motion-hold", type=float, default=9.0,
+                    help="seconds without motion before recognition sleeps")
     args = ap.parse_args(argv)
 
     roi = None
@@ -552,15 +613,28 @@ def main(argv=None):
         sys.exit(1)
     srv.daemon_threads = True
 
+    # Motion watch: shared by the source thread (feeds frames) and the
+    # recognition thread (queries motion_recent). Static scene -> the
+    # recognizer sleeps until something moves.
+    watch = None
+    if args.motion_threshold > 0:
+        watch = motion_watch.MotionWatch(threshold=args.motion_threshold,
+                                         hold_s=args.motion_hold)
+        print("edge hub: motion watch on (thr=%.1f hold=%.0fs)"
+              % (args.motion_threshold, args.motion_hold), flush=True)
+
     if os.path.basename(args.source).startswith("video"):
         reader = CameraThread(hub, latest, args.source, args.cam_width,
                               args.cam_height, args.cam_fps,
-                              args.relay_fps, args.jpeg_quality, roi=roi)
+                              args.relay_fps, args.jpeg_quality, roi=roi,
+                              watch=watch)
     else:
-        reader = ReaderThread(hub, latest, args.source, args.baud)
+        reader = ReaderThread(hub, latest, args.source, args.baud,
+                              watch=watch)
     recog = RecogThread(hub, latest, recognizer, args.period, args.fresh,
                         args.min_conf, min_chars=args.min_chars,
-                        votes=args.votes, ng_reset=args.ng_reset)
+                        votes=args.votes, ng_reset=args.ng_reset,
+                        watch=watch)
     reader.start()
     recog.start()
     print("edge hub: listening on %s:%d source=%s period=%dms"
