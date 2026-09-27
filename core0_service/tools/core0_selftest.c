@@ -51,14 +51,16 @@ typedef struct {
     int          gate_close_calls;
     int          query_calls;
     int          notify_01, notify_03, notify_04;
+    int          gate_open_rc;      /* S16: 注入发送失败（0=成功） */
     biz_public_t pub;
     int          pub_cnt;
 } fake_t;
 
 static int fk_gate_open(void *ctx)
 {
-    ((fake_t *)ctx)->gate_open_calls++;
-    return 0;
+    fake_t *f = (fake_t *)ctx;
+    f->gate_open_calls++;
+    return f->gate_open_rc;
 }
 
 static int fk_gate_close(void *ctx)
@@ -675,6 +677,29 @@ static void s15_deferred_catchup(void)
     biz_destroy(b);
 }
 
+static void s16_gate_open_fail(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S16 gate open send failure -> deny, not swallowed\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1600000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1600000);
+    fk.gate_open_rc = -1;                       /* inject rpmsg send failure */
+    post_result(b, PLATE_OK1, 0.95f, 0, 1600500);
+    CHECK(fk.gate_open_calls == 1);
+    CHECK(fk.pub.gate_state == 0);              /* deny: gate never opened */
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);    /* via DENY path */
+
+    biz_destroy(b);
+}
+
 static void s12_link_fault(void)
 {
     app_config_t cfg;
@@ -831,6 +856,7 @@ int main(void)
     s10_config();
     s11_dup_arrive();
     s15_deferred_catchup();
+    s16_gate_open_fail();
     s12_link_fault();
     s13_log_and_storage();
     s14_node_gate_event();

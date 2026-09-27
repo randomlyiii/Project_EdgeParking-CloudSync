@@ -347,10 +347,19 @@ static void on_recog_result(biz_t *b, const biz_event_t *ev)
 
     m = wl_match(&b->cfg->wl, ev->plate, today_yyyymmdd(b->now));
     if (m == WL_MATCH_OK) {
+        int rc;
         to_state(b, BIZ_ST_GATE_OPEN, "whitelist hit");
-        gate_cmd(b, 1, "auto");
-        to_state(b, BIZ_ST_COOL_DOWN, "after gate open");
-        b->cool_deadline = b->now + b->cfg->cool_down_ms;
+        rc = gate_cmd(b, 1, "auto");
+        if (rc == 0) {
+            to_state(b, BIZ_ST_COOL_DOWN, "after gate open");
+            b->cool_deadline = b->now + b->cfg->cool_down_ms;
+        } else {
+            /* audit 2026-09-27: rc used to be dropped - the car was
+             * swallowed with no DENY record while the flow continued as
+             * if the gate had opened. Deny instead: visible + auditable. */
+            LOGW("gate", "auto open failed (rc=%d): denying for audit", rc);
+            enter_deny(b, "gate command failed");
+        }
     } else {
         /* spec 5.3.1.4: DENY keeps plate + reason for audit */
         LOGW("whitelist", "plate '%s' rejected: %s", ev->plate,
