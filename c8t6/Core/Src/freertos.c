@@ -279,11 +279,11 @@ void BH1750Task(void *argument)
       edge = Shade_FSM_Update(lux);
       if (edge == 1)
       {
-        (void)CAN_Node_SendEvent(CAN_EVT_CAR_ARRIVE, 0u);
+        (void)CAN_Node_SendEventRetry(CAN_EVT_CAR_ARRIVE, 0u);
       }
       else if (edge == -1)
       {
-        (void)CAN_Node_SendEvent(CAN_EVT_CAR_LEAVE, 0u);
+        (void)CAN_Node_SendEventRetry(CAN_EVT_CAR_LEAVE, 0u);
       }
     }
     else
@@ -292,7 +292,7 @@ void BH1750Task(void *argument)
       if (fault_reported == 0u)
       {
         fault_reported = 1u;   /* 只在"发生"边沿上报一次, 免每 200ms 刷总线 */
-        (void)CAN_Node_SendEvent(CAN_EVT_NODE_FAULT, (uint16_t)CAN_FAULT_SENSOR);
+        (void)CAN_Node_SendEventRetry(CAN_EVT_NODE_FAULT, (uint16_t)CAN_FAULT_SENSOR);
       }
     }
 

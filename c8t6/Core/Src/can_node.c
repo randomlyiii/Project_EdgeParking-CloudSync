@@ -45,6 +45,38 @@ static volatile uint32_t s_hb_last_tick     = 0u;   /* 上次心跳 tick */
 static uint8_t           s_gate_latched     = 0xFFu;/* 闸位事件基线(0xFF=未初始化) */
 static uint8_t           s_ready_sent       = 0u;   /* 上电就绪事件只发一次 */
 
+/* P2（2026-09-27 审计）: 1 槽事件重发缓存。SendEvent 失败（NART=ENABLE 下
+ * 无 ACK 由硬件静默丢弃）时入槽，CAN_Node_Poll 每拍(10ms)补发直至成功；
+ * CAN_EVT_RETRY_MAX 拍(~200ms)仍失败则放弃等下一自然边沿。
+ * 0x01/0x02 有 0x210 bit1 兜底、0x04 有 bit0 兜底，1 槽足够。 */
+#define CAN_EVT_RETRY_MAX 20u
+static struct
+{
+  uint8_t  valid;
+  uint8_t  ev;
+  uint16_t arg;
+  uint8_t  tries;
+} s_evt_retry = { 0u, 0u, 0u, 0u };
+
+/* 发送或入槽：返回 0 = 已发送或已受理（含入槽稍后补发）。
+   槽被占用时本次调用不覆盖旧槽（更旧的事件优先补发）——0x01/0x02/0x04
+   均有状态位兜底，丢一次更新的重复事件可接受。 */
+uint8_t CAN_Node_SendEventRetry(uint8_t ev, uint16_t arg)
+{
+  if (CAN_Node_SendEvent(ev, arg) == 0u)
+  {
+    return 0u;
+  }
+  if (s_evt_retry.valid == 0u)
+  {
+    s_evt_retry.ev    = ev;
+    s_evt_retry.arg   = arg;
+    s_evt_retry.tries = 0u;
+    s_evt_retry.valid = 1u;
+  }
+  return 0u;
+}
+
 /* 调试监视(全局开放, 调试器 live watch)。volatile 防止优化器把"只写不读"的全局删掉 */
 volatile CAN_NodeDbg_t g_can_node_dbg;
 
@@ -177,15 +209,25 @@ void CAN_Node_Poll(void)
     if (s_gate_latched == 0xFFu)
     {
       s_gate_latched = g;
-      if (CAN_Node_SendEvent(CAN_EVT_GATE_STATE, (uint16_t)g) == 0u)
-      {
-        g_can_node_dbg.gate_evts++;
-      }
     }
     else if (g != s_gate_latched)
     {
       s_gate_latched = g;
+      (void)CAN_Node_SendEventRetry(CAN_EVT_GATE_STATE, (uint16_t)g);
+      g_can_node_dbg.gate_evts++;
+    }
+  }
 
+  /* ---- P2: 1 槽事件重发缓存——失败（NART 无 ACK 静默丢）不再丢边沿 ---- */
+  if (s_evt_retry.valid != 0u)
+  {
+    if (CAN_Node_SendEvent(s_evt_retry.ev, s_evt_retry.arg) == 0u)
+    {
+      s_evt_retry.valid = 0u;
+    }
+    else if (++s_evt_retry.tries >= CAN_EVT_RETRY_MAX)
+    {
+      s_evt_retry.valid = 0u;   /* ~200ms 窗口内补不出去，放弃等下一自然边沿 */
     }
   }
 

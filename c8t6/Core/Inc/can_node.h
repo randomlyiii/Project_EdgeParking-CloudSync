@@ -71,6 +71,9 @@ void CAN_Node_Poll(void);
 /* 发 0x200 语义事件帧(检测/闸位边沿时调用)。返回 0=成功。
    arg 的含义由事件码决定(见上表)；事件帧同时把"最近事件时刻"记给 OLED 闪烁。 */
 uint8_t CAN_Node_SendEvent(uint8_t ev, uint16_t arg);
+/* P2(2026-09-27): 发送失败自动入 1 槽重发缓存（CAN_Node_Poll 每拍补发），
+ * 调用方用本函数替代裸 CAN_Node_SendEvent 即获得"至少一次"语义。 */
+uint8_t CAN_Node_SendEventRetry(uint8_t ev, uint16_t arg);
 
 /* ---------- 供 OLED/状态显示读取 ---------- */
 uint8_t  CAN_Node_GateOpen(void);          /* 1=闸执行到位(收 0x100/0x01 后缓动完成, gate.c) */
