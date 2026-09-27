@@ -700,6 +700,30 @@ static void s16_gate_open_fail(void)
     biz_destroy(b);
 }
 
+static void s17_leave_cancels_window(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S17 car leave during recognition cancels the window\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1700000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1700000);
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 1700500);
+    CHECK(biz_state(b) == BIZ_ST_IDLE);
+    CHECK(fk.pub.recog_pending == 0);
+    post_result(b, PLATE_OK1, 0.95f, 0, 1701000);  /* late: must not open */
+    CHECK(biz_state(b) == BIZ_ST_IDLE);
+    CHECK(fk.pub.gate_state == 0);
+
+    biz_destroy(b);
+}
+
 static void s12_link_fault(void)
 {
     app_config_t cfg;
@@ -857,6 +881,7 @@ int main(void)
     s11_dup_arrive();
     s15_deferred_catchup();
     s16_gate_open_fail();
+    s17_leave_cancels_window();
     s12_link_fault();
     s13_log_and_storage();
     s14_node_gate_event();

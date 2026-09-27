@@ -302,6 +302,14 @@ static void on_car_leave(biz_t *b)
     b->presence = 0;
     LOGI("node", "detection cleared (node event 0x02 CAR_LEAVE)");
 
+    if (b->st == BIZ_ST_RECOGNIZING) {
+        /* audit 2026-09-27: the car left while recognition was in flight;
+         * close the window so a late result cannot open the gate for air */
+        b->recog_pending = 0;
+        refresh_public(b);
+        to_state(b, BIZ_ST_IDLE, "car left during recognition");
+    }
+
     if (b->pass_pending) {
         int32_t used;
         b->pass_pending = 0;
