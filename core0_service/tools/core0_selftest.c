@@ -6,7 +6,7 @@
  * commands and notify events recorded), covering:
  *   S1  happy path: car arrive -> whitelisted result -> open -> cooldown ->
  *       passage count on car leave (entry mode)
- *   S2  recognition timeout -> deny, late result dropped
+ *   S2  recognition timeout -> deny; fresh result while car present re-opens
  *   S3  cloud_pending extends 3s -> 6s hard cap
  *   S4  core1 dead at registration -> immediate downgrade, no trigger
  *   S5  whitelist reject (no entry), DENY keeps last plate
@@ -239,7 +239,8 @@ static void s2_timeout(void)
     fake_t fk;
     biz_t *b;
 
-    printf("S2 recognition timeout -> deny\n");
+    printf("S2 recognition timeout -> deny; fresh result while car "
+           "present re-opens (2026-09-28)\n");
     make_cfg(&cfg);
     fake_platform(&plat, &fk);
     b = biz_create(&cfg, &plat);
@@ -256,11 +257,15 @@ static void s2_timeout(void)
     CHECK(fk.gate_open_calls == 0);
     CHECK(fk.pub.recog_pending == 0);
 
-    post_result(b, PLATE_OK1, 0.95f, 0, 203200); /* late result dropped */
-    CHECK(fk.gate_open_calls == 0);
+    /* the recognition that timed out finishes a moment later: the car is
+     * still on the sensor and core1 pushes results in real time, so this
+     * IS a fresh result about the present car - it must be accepted */
+    post_result(b, PLATE_OK1, 0.95f, 0, 203200);
+    CHECK(fk.gate_open_calls == 1);
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
 
-    periodic_alive(b, &fk, 207300, 0);
-    CHECK(biz_state(b) == BIZ_ST_IDLE);
+    periodic_alive(b, &fk, 207300, 0);   /* cooldown done; result handled */
+    CHECK(biz_state(b) == BIZ_ST_IDLE);  /* -> no presence re-arm */
 
     biz_destroy(b);
 }
@@ -901,6 +906,98 @@ static void s14_node_gate_event(void)
     biz_destroy(b);
 }
 
+/* S19 - a result that arrives when NO car is present must never open the
+ * gate, no matter how fresh it looks (audit 2026-09-27 #5 stays true after
+ * the 2026-09-28 acceptance relaxation). */
+static void s19_late_result_without_presence(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S19 result with no car present is dropped (gate stays closed)\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 1900000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 1900000);
+    post_result(b, PLATE_OK1, 0.95f, 0, 1900500);  /* handled, gate opens */
+    CHECK(fk.gate_open_calls == 1);
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
+
+    post(b, &fk, BIZ_EV_CAR_LEAVE, 1900600);       /* car gone */
+    post_result(b, PLATE_OK1, 0.95f, 0, 1900700);  /* RK re-streams once more */
+    CHECK(fk.gate_open_calls == 1);                /* must NOT open again */
+
+    biz_destroy(b);
+}
+
+/* S20 - the user's 2026-09-28 case: recognition times out, the car is still
+ * covering the sensor, so the daemon itself re-arms recognition on the slow
+ * (timeout + cooldown) cycle instead of waiting for a new arrival edge that
+ * never comes. */
+static void s20_presence_rearm(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S20 timeout + car still present -> recognition re-armed\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 2000000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 2000000);       /* RECOGNIZING */
+    CHECK(fk.notify_01 == 1);
+    periodic_alive(b, &fk, 2003100, 0);             /* past 3s -> deny */
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
+
+    /* no result handled and the car never left: cooldown end re-arms */
+    periodic_alive(b, &fk, 2007200, 0);
+    CHECK(biz_state(b) == BIZ_ST_RECOGNIZING);
+    CHECK(fk.notify_01 == 2);
+
+    /* and a fresh result is now accepted through the normal window */
+    post_result(b, PLATE_OK1, 0.95f, 0, 2007300);
+    CHECK(fk.gate_open_calls == 1);
+
+    biz_destroy(b);
+}
+
+/* S21 - while a rejected car sits in the zone the edge side keeps streaming
+ * the same plate ~1/s; the (presence, plate) verdict cache must swallow the
+ * repeats instead of re-deny / re-open / refreshing the cooldown forever. */
+static void s21_duplicate_plate_dropped(void)
+{
+    app_config_t cfg;
+    biz_platform_t plat;
+    fake_t fk;
+    biz_t *b;
+
+    printf("S21 same plate re-streamed within one presence is dropped\n");
+    make_cfg(&cfg);
+    fake_platform(&plat, &fk);
+    b = biz_create(&cfg, &plat);
+    periodic_alive(b, &fk, 2100000, 0);
+
+    post(b, &fk, BIZ_EV_CAR_ARRIVE, 2100000);
+    post_result(b, PLATE_BAD, 0.90f, 0, 2100500);   /* deny, handled=BAD */
+    CHECK(biz_state(b) == BIZ_ST_COOL_DOWN);
+    CHECK(fk.gate_open_calls == 0);
+
+    post_result(b, PLATE_BAD, 0.90f, 0, 2100600);   /* same plate: dropped */
+    /* had it been re-processed the cooldown would restart (ending 2108600);
+     * dropped -> cooldown still ends 2104500 -> IDLE without re-arm */
+    periodic_alive(b, &fk, 2104700, 0);
+    CHECK(biz_state(b) == BIZ_ST_IDLE);
+
+    biz_destroy(b);
+}
+
 int main(void)
 {
     log_set_level(LOG_WARN);    /* keep the output focused on failures */
@@ -923,6 +1020,9 @@ int main(void)
     s12_link_fault();
     s13_log_and_storage();
     s14_node_gate_event();
+    s19_late_result_without_presence();
+    s20_presence_rearm();
+    s21_duplicate_plate_dropped();
 
     store_shutdown();
     printf("\n%d checks, %d failures\n", g_checks, g_fails);

@@ -67,6 +67,13 @@ struct biz {
     char        last_plate[16];
     float       last_conf;
     uint8_t     last_source;
+    /* one recognition verdict per (presence cycle, plate): the edge side
+     * keeps streaming the same plate once per second while the car sits in
+     * the zone; without this, a whitelisted hit would re-enter the whitelist
+     * check every second (cooldown never expires) and a rejected plate would
+     * re-deny every cycle. Reset on every 0->1 arrival edge. 2026-09-28 */
+    uint8_t     handled_valid;
+    char        handled_plate[16];
 
     /* gate */
     uint8_t     gate_state;        /* observed: own command, corrected by 0x23 */
@@ -276,6 +283,7 @@ static void on_car_arrive(biz_t *b)
         return;
     }
     b->presence = 1;
+    b->handled_valid = 0;      /* new presence cycle: fresh verdict history */
     LOGI("node", "car arrival observed (node event 0x01 CAR_ARRIVE)");
 
     if (b->st != BIZ_ST_IDLE) {
@@ -300,6 +308,7 @@ static void on_car_leave(biz_t *b)
         return;
     }
     b->presence = 0;
+    b->arrive_deferred = 0;    /* a deferred interest dies with the car */
     LOGI("node", "detection cleared (node event 0x02 CAR_LEAVE)");
 
     if (b->st == BIZ_ST_RECOGNIZING) {
@@ -341,13 +350,33 @@ static void on_recog_result(biz_t *b, const biz_event_t *ev)
     b->last_conf = ev->conf;
     b->last_source = ev->source;
 
-    if (b->st != BIZ_ST_RECOGNIZING) {
-        /* spec 5.2.3.2: late / repeated result after timeout is dropped */
-        LOGW("recog", "late result '%s' in %s: dropped (idempotent)",
+    if (b->handled_valid &&
+        strcmp(b->handled_plate, ev->plate) == 0) {
+        /* the edge side re-streams the same plate ~1/s while the car sits
+         * in the zone; the verdict for this plate will not change */
+        LOGW("recog", "result '%s' already handled this presence: dropped",
+             ev->plate);
+        return;
+    }
+    if (b->st != BIZ_ST_RECOGNIZING && !b->presence) {
+        /* spec 5.2.3.2 + audit 2026-09-27 #5: a late result after the car
+         * left must not open the gate (no car behind it anymore) */
+        LOGW("recog", "late result '%s' with no car present (%s): dropped",
              ev->plate, biz_state_name(b->st));
         return;
     }
+    if (b->st != BIZ_ST_RECOGNIZING) {
+        /* 2026-09-28: the window is not the arbiter of freshness anymore.
+         * Core1 pushes every result in real time (<1s), so a result that
+         * arrives while the car is still on the sensor IS a result about
+         * that car - accept it even when the state machine already left
+         * RECOGNIZING (timeout->deny, cooldown, idle re-arm). */
+        LOGI("recog", "fresh result '%s' accepted in %s (car present)",
+             ev->plate, biz_state_name(b->st));
+    }
 
+    b->handled_valid = 1;
+    snprintf(b->handled_plate, sizeof(b->handled_plate), "%s", ev->plate);
     b->recog_pending = 0;
     to_state(b, BIZ_ST_WHITELIST_CHECK, "result arrived");
     store_event("recog", ev->plate, ev->source ? "source=cloud" : "source=edge");
@@ -621,10 +650,24 @@ void biz_periodic(biz_t *b, int64_t now_ms, const biz_poll_in_t *in)
          * now gets the recognition that was dropped (audit 2026-09-27) */
         if (b->presence && b->arrive_deferred) {
             b->arrive_deferred = 0;
+            b->handled_valid = 0;   /* a new car: fresh verdict history */
             LOGI("node", "car present since cooldown: catching up "
                  "with the deferred recognition");
             to_state(b, BIZ_ST_CAR_WAIT, "deferred registration");
             store_event("car_arrive", "", "deferred");
+            start_recognition(b);
+        } else if (b->presence && !b->handled_valid) {
+            /* 2026-09-28 "车在场就持续认": the car is still covering the
+             * sensor and no usable result has been produced yet (the usual
+             * case is a recognition timeout above). The node only sends
+             * arrival EDGES, so without this re-arm the flow would sit in
+             * IDLE with presence=1 forever and every later (fresh, real
+             * time) result would be dropped as "late". Re-trigger on a
+             * slow cycle until a result is handled or the car leaves. */
+            LOGI("node", "car still present, no result yet: "
+                 "re-arming recognition");
+            to_state(b, BIZ_ST_CAR_WAIT, "presence re-arm");
+            store_event("car_arrive", "", "rearm");
             start_recognition(b);
         }
     }
