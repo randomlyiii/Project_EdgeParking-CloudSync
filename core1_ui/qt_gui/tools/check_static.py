@@ -9,8 +9,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
-FILES = ["main.cpp", "mainwindow.h", "mainwindow.cpp", "k210_link.h",
-         "k210_link.cpp", "ipc_reader.h", "ipc_reader.cpp",
+FILES = ["main.cpp", "mainwindow.h", "mainwindow.cpp", "cam_link.h",
+         "cam_link.cpp", "ipc_reader.h", "ipc_reader.cpp",
          "ipc_writer.h", "ipc_writer.cpp",
          # ---- step 7 (P7-01..P7-07): cloud fallback + network page ----
          "cloud_settings.h", "cloud_settings.cpp",
@@ -37,14 +37,14 @@ for f in FILES:
 
 # signature consistency: whole-file substring matching (single-line sigs)
 checks = [
-    ("k210_link.h", "double confidence, int source"),
-    ("k210_link.cpp", "double confidence, int source"),
+    ("cam_link.h", "double confidence, int source"),
+    ("cam_link.cpp", "double confidence, int source"),
     ("mainwindow.h", "double confidence, int source"),
     ("mainwindow.cpp", "showPlatePopup(plate, confidence, source, false)"),
-    ("k210_link.h", "busyChanged(bool busy)"),
-    ("k210_link.cpp", "busyChanged(bool busy)"),
+    ("cam_link.h", "busyChanged(bool busy)"),
+    ("cam_link.cpp", "busyChanged(bool busy)"),
     ("mainwindow.h", "onK210Busy(bool busy)"),
-    ("main.cpp", "&K210Link::busyChanged"),
+    ("main.cpp", "&CamLink::busyChanged"),
     ("main.cpp", "&MainWindow::onK210Busy"),
     # ---- Core1 business write-end (IpcWriter) ----
     ("ipc_writer.h", "class IpcWriter : public QObject"),
@@ -329,19 +329,19 @@ else:
 #     mid-frame (unplug / IDE interrupt / one lost line) would strand chunks for ever.
 #     Neither key space is self-limiting - a garbled "K2:IMG:" offset is arbitrary and
 #     the binary seq space is 65536 wide - so both need a hard cap.
-_lk = (SRC / "k210_link.cpp").read_text(encoding="utf-8", errors="replace")
+_lk = (SRC / "cam_link.cpp").read_text(encoding="utf-8", errors="replace")
 for needle in ["kMaxTextChunks", "kMaxTextChunkBytes",
                "kMaxBinChunks", "kMaxBinChunkBytes"]:
     if needle not in _lk:
-        print("[FAIL] k210_link: unbounded re-assembly buffer (%s missing)" % needle)
+        print("[FAIL] cam_link: unbounded re-assembly buffer (%s missing)" % needle)
         ok = False
 if "m_lineBuf.clear()" not in _lk:
-    print("[FAIL] k210_link: line buffer has no size cap")
+    print("[FAIL] cam_link: line buffer has no size cap")
     ok = False
 # a partial frame must be dropped, not published: both publishers validate the length
 for needle in ["b64all.size() == want", "all.size() == int(total)"]:
     if needle not in _lk:
-        print("[FAIL] k210_link: dropped partial could be published (%s)" % needle)
+        print("[FAIL] cam_link: dropped partial could be published (%s)" % needle)
         ok = False
 print("[pass] K210 partial frames are bounded, dropped and never published")
 
@@ -351,29 +351,29 @@ print("[pass] K210 partial frames are bounded, dropped and never published")
 #     [stat] line before a long-run crash.  It must be forwarded, journaled, and
 #     filtered before it hits the panel - and it must NOT be mistaken for image
 #     data (the else branch cannot touch the re-assembly map or publish).
-_lk_body = body(_lk, "void K210LinkWorker::feedText(")
-if "emit k210Log(" not in _lk_body:
-    print("[FAIL] k210_link: non-K2 console lines are still dropped")
+_lk_body = body(_lk, "void CamLinkWorker::feedText(")
+if "emit camLog(" not in _lk_body:
+    print("[FAIL] cam_link: non-K2 console lines are still dropped")
     ok = False
 if "publishJpeg" in _lk_body.split("else if (!line.isEmpty()")[-1]:
-    print("[FAIL] k210_link: a console log line can reach the frame publisher")
+    print("[FAIL] cam_link: a console log line can reach the frame publisher")
     ok = False
 if "kMaxLogLineBytes" not in _lk:
-    print("[FAIL] k210_link: forwarded log lines are unbounded")
+    print("[FAIL] cam_link: forwarded log lines are unbounded")
     ok = False
-_hk = (SRC / "k210_link.h").read_text(encoding="utf-8", errors="replace")
-if "void k210Log(const QString &line);" not in _hk:
-    print("[FAIL] k210_link.h does not expose k210Log")
+_hk = (SRC / "cam_link.h").read_text(encoding="utf-8", errors="replace")
+if "void camLog(const QString &line);" not in _hk:
+    print("[FAIL] cam_link.h does not expose camLog")
     ok = False
-if "&K210LinkWorker::k210Log, this, &K210Link::k210Log" not in _lk:
-    print("[FAIL] k210_link.cpp does not forward the worker's k210Log")
+if "&CamLinkWorker::camLog, this, &CamLink::camLog" not in _lk:
+    print("[FAIL] cam_link.cpp does not forward the worker camLog")
     ok = False
 _mj = (SRC / "main.cpp").read_text(encoding="utf-8", errors="replace")
-for needle in ["&K210Link::k210Log", 'qWarning("k210: %s"',
-               'pushEvent(QStringLiteral("k210 ")', "kJ210BurstMs",
-               "k210LogIsBurst"]:
+for needle in ["&CamLink::camLog", 'qWarning("cam: %s"',
+               'pushEvent(QStringLiteral("cam ")', "kCamBurstMs",
+               "camLogIsBurst"]:
     if needle not in _mj:
-        print("[FAIL] main.cpp does not surface the K210 log (%s)" % needle)
+        print("[FAIL] main.cpp does not surface the cam log (%s)" % needle)
         ok = False
 print("[pass] the K210 console log reaches journald + the panel ticker")
 
@@ -381,7 +381,7 @@ print("[pass] the K210 console log reaches journald + the panel ticker")
 #     not journald-only (2026-09-16 user report: the IDE shows the plate, the board shows
 #     nothing - the operator at the gate cannot read journald).  [CFG] is what proves
 #     WHICH park_app.py is flashed; both are burst-limited / once-per-boot.
-_panel = body(_mj, "static bool k210LogIsPanelWorthy(")
+_panel = body(_mj, "static bool camLogIsPanelWorthy(")
 for _needle in ('"[RECOG]"', '"[CFG]"'):
     if _needle not in _panel:
         print("[FAIL] main.cpp keeps %s off the panel (journald only)" % _needle)
@@ -850,10 +850,10 @@ if b"192.168." in env_sample.encode("utf-8"):
     print("[FAIL] sample_park-ui.env contains an IP literal")
     ok = False
 # the tcp mode must be real: worker open/close, mode dispatch and CLI/env entry
-kl = (SRC / "k210_link.cpp").read_text(encoding="utf-8", errors="replace")
+kl = (SRC / "cam_link.cpp").read_text(encoding="utf-8", errors="replace")
 for needle in ["openTcp()", "closeSocket()", "mode == \"tcp\"", "linkFd()"]:
     if needle not in kl:
-        print("[FAIL] k210_link tcp mode misses '%s'" % needle)
+        print("[FAIL] cam_link tcp mode misses '%s'" % needle)
         ok = False
 mj = (SRC / "main.cpp").read_text(encoding="utf-8", errors="replace")
 for needle in ["PARK_UI_K210_TCP", "optTcp", "tcpHost"]:

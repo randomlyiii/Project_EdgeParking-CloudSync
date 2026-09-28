@@ -1,6 +1,6 @@
 #ifndef K210_LINK_H
 #define K210_LINK_H
-/* K210Link - in-process receiver of the K210 preview/result stream.
+/* CamLink - in-process receiver of the K210 preview/result stream.
  *
  * Supports the two transport variants documented in docs/protocols.md:
  *   - text  : console/USB CDC, lines "K2:IMG:<off>:<b64>" ... "K2:END:<len>"
@@ -26,14 +26,14 @@
 #include <QThread>
 #include <QMap>
 
-class K210LinkWorker;
+class CamLinkWorker;
 
-class K210Link : public QObject
+class CamLink : public QObject
 {
     Q_OBJECT
 public:
-    explicit K210Link(QObject *parent = nullptr);
-    ~K210Link() override;
+    explicit CamLink(QObject *parent = nullptr);
+    ~CamLink() override;
 
     void start(const QString &dev, int baud, const QString &mode,
                const QString &filePath, const QString &tcpHost = QString(),
@@ -62,11 +62,11 @@ signals:
      * [BOOT]/[MEM]/[SD]/[KPU]/[CAM]/[RECOG]/[stat].  Raw, untrusted, and the
      * only way to see the board's boot progress once the link goes to the MP157
      * instead of the CanMV IDE (2026-09-16). */
-    void k210Log(const QString &line);
+    void camLog(const QString &line);
 
 private:
     QThread m_thread;
-    K210LinkWorker *m_worker = nullptr;
+    CamLinkWorker *m_worker = nullptr;
     volatile bool m_up = false;
     bool m_started = false;
 };

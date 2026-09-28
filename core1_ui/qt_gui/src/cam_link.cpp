@@ -1,4 +1,4 @@
-#include "k210_link.h"
+#include "cam_link.h"
 
 #include <QDir>
 #include <QFile>
@@ -74,11 +74,11 @@ static const char *flipModeName(int m)
 /* Runs in its own QThread. Owns the fd, the two frame parsers and the
  * JPEG decoder; publishes only the newest decoded QImage + signals. */
 
-class K210LinkWorker : public QObject
+class CamLinkWorker : public QObject
 {
     Q_OBJECT
 public:
-    explicit K210LinkWorker(QObject *parent = nullptr) : QObject(parent) {}
+    explicit CamLinkWorker(QObject *parent = nullptr) : QObject(parent) {}
 
     QString dev = "/dev/ttyACM0";
     int baud = 115200;
@@ -142,7 +142,7 @@ signals:
      * these lines used to be dropped here, which is why "leave the IDE and you
      * cannot see the boot progress" and "the last [stat] before a crash is gone"
      * shared one root cause. */
-    void k210Log(const QString &line);
+    void camLog(const QString &line);
 
 private:
     void feed(const QByteArray &bytes);
@@ -291,7 +291,7 @@ static speed_t baudConstant(int baud)
     }
 }
 
-bool K210LinkWorker::openSerial()
+bool CamLinkWorker::openSerial()
 {
     m_fd = ::open(dev.toLocal8Bit().constData(),
                   O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -324,7 +324,7 @@ bool K210LinkWorker::openSerial()
     return true;
 }
 
-void K210LinkWorker::closeSerial()
+void CamLinkWorker::closeSerial()
 {
     if (m_fd >= 0)
     {
@@ -333,7 +333,7 @@ void K210LinkWorker::closeSerial()
     }
 }
 
-bool K210LinkWorker::openTcp()
+bool CamLinkWorker::openTcp()
 {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
@@ -392,7 +392,7 @@ bool K210LinkWorker::openTcp()
     return true;
 }
 
-void K210LinkWorker::closeSocket()
+void CamLinkWorker::closeSocket()
 {
     if (m_sock >= 0)
     {
@@ -401,7 +401,7 @@ void K210LinkWorker::closeSocket()
     }
 }
 
-void K210LinkWorker::run()
+void CamLinkWorker::run()
 {
     m_flip = flipModeFromEnv();
     qWarning("k210 link: orient=%s (build marker %s, env PARK_UI_K210_FLIP)",
@@ -514,7 +514,7 @@ void K210LinkWorker::run()
     setUp(false);
 }
 
-void K210LinkWorker::runFileMode()
+void CamLinkWorker::runFileMode()
 {
     QStringList files;
     QFileInfo fi(filePath);
@@ -553,7 +553,7 @@ void K210LinkWorker::runFileMode()
     }
 }
 
-void K210LinkWorker::feed(const QByteArray &bytes)
+void CamLinkWorker::feed(const QByteArray &bytes)
 {
     /* tcp relays the console text stream; binary frames never appear on it */
     if (mode == "binary")
@@ -572,7 +572,7 @@ void K210LinkWorker::feed(const QByteArray &bytes)
 }
 
 /* ---- text channel: "K2:IMG:<off>:<b64>" ... "K2:END:<b64len>" ---- */
-void K210LinkWorker::feedText(const QByteArray &bytes)
+void CamLinkWorker::feedText(const QByteArray &bytes)
 {
     m_lineBuf += bytes;
     int nl;
@@ -640,7 +640,7 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
              * stay dropped: those are protocol noise, not log. */
             if (line.size() > kMaxLogLineBytes)
                 line.truncate(kMaxLogLineBytes);
-            emit k210Log(QString::fromUtf8(line));
+            emit camLog(QString::fromUtf8(line));
         }
     }
     if (m_lineBuf.size() > 64 * 1024)
@@ -648,7 +648,7 @@ void K210LinkWorker::feedText(const QByteArray &bytes)
 }
 
 /* ---- binary channel: AA 55 | type | seq(2LE) | len(2LE) | payload | crc(2LE) ---- */
-void K210LinkWorker::feedBinary(const QByteArray &bytes)
+void CamLinkWorker::feedBinary(const QByteArray &bytes)
 {
     m_rxBuf += bytes;
     while (true)
@@ -696,7 +696,7 @@ void K210LinkWorker::feedBinary(const QByteArray &bytes)
     }
 }
 
-void K210LinkWorker::processBinary(const QByteArray &body)
+void CamLinkWorker::processBinary(const QByteArray &body)
 {
     const quint8 type = quint8(body.at(0));
     const quint16 seq = quint16(quint8(body.at(1))) |
@@ -773,7 +773,7 @@ void K210LinkWorker::processBinary(const QByteArray &body)
     }
 }
 
-void K210LinkWorker::finishPreview(const QByteArray &jpeg, int purpose)
+void CamLinkWorker::finishPreview(const QByteArray &jpeg, int purpose)
 {
     if (purpose == 1)
     {
@@ -786,40 +786,40 @@ void K210LinkWorker::finishPreview(const QByteArray &jpeg, int purpose)
 
 /* ============================ facade ============================ */
 
-K210Link::K210Link(QObject *parent)
+CamLink::CamLink(QObject *parent)
     : QObject(parent)
 {
-    m_worker = new K210LinkWorker();
+    m_worker = new CamLinkWorker();
     m_worker->moveToThread(&m_thread);
 
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     /* signal-to-signal forward, queued into the UI thread automatically */
-    connect(m_worker, &K210LinkWorker::linkUp, this, [this](bool up)
+    connect(m_worker, &CamLinkWorker::linkUp, this, [this](bool up)
             {
         m_up = up;
         emit linkUp(up); });
-    connect(m_worker, &K210LinkWorker::recogResult,
-            this, &K210Link::recogResult);
-    connect(m_worker, &K210LinkWorker::recogFailed,
-            this, &K210Link::recogFailed);
-    connect(m_worker, &K210LinkWorker::snapshotCaptured,
-            this, &K210Link::snapshotCaptured);
-    connect(m_worker, &K210LinkWorker::busyChanged,
-            this, &K210Link::busyChanged);
-    connect(m_worker, &K210LinkWorker::previewFps,
-            this, &K210Link::previewFps);
-    connect(m_worker, &K210LinkWorker::k210Log, this, &K210Link::k210Log);
+    connect(m_worker, &CamLinkWorker::recogResult,
+            this, &CamLink::recogResult);
+    connect(m_worker, &CamLinkWorker::recogFailed,
+            this, &CamLink::recogFailed);
+    connect(m_worker, &CamLinkWorker::snapshotCaptured,
+            this, &CamLink::snapshotCaptured);
+    connect(m_worker, &CamLinkWorker::busyChanged,
+            this, &CamLink::busyChanged);
+    connect(m_worker, &CamLinkWorker::previewFps,
+            this, &CamLink::previewFps);
+    connect(m_worker, &CamLinkWorker::camLog, this, &CamLink::camLog);
 
-    m_thread.setObjectName("k210_link");
+    m_thread.setObjectName("cam_link");
     m_thread.start();
 }
 
-K210Link::~K210Link()
+CamLink::~CamLink()
 {
     stop();
 }
 
-void K210Link::start(const QString &dev, int baud, const QString &mode,
+void CamLink::start(const QString &dev, int baud, const QString &mode,
                      const QString &filePath, const QString &tcpHost,
                      int tcpPort)
 {
@@ -835,7 +835,7 @@ void K210Link::start(const QString &dev, int baud, const QString &mode,
     QMetaObject::invokeMethod(m_worker, "startRun", Qt::QueuedConnection);
 }
 
-void K210Link::stop()
+void CamLink::stop()
 {
     if (m_worker)
     {
@@ -846,14 +846,14 @@ void K210Link::stop()
     }
 }
 
-bool K210Link::takeFrame(QImage *out)
+bool CamLink::takeFrame(QImage *out)
 {
     return m_worker ? m_worker->takeFrame(out) : false;
 }
 
-bool K210Link::latestFrame(QImage *out)
+bool CamLink::latestFrame(QImage *out)
 {
     return m_worker ? m_worker->latestFrame(out) : false;
 }
 
-#include "k210_link.moc"
+#include "cam_link.moc"

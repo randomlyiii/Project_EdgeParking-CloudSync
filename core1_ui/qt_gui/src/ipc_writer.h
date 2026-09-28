@@ -14,7 +14,7 @@
  * except the consumer-clear of evt_bits_c0) and MUST NEVER bump seq.
  *
  * Threading: everything runs on the main thread (heartbeat and event-poll
- * are QTimers; recognition results arrive via queued signals from K210Link's
+ * are QTimers; recognition results arrive via queued signals from CamLink's
  * worker thread). No internal locking is needed.
  */
 #include <QObject>

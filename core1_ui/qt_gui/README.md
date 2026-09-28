@@ -8,7 +8,7 @@ QWidget 实现（板上 Qt 5.12.8 已带 Quick/Controls2，但 QWidget 免 QML �
 |---|---|
 | `src/main.cpp` | 参数解析、字体、装配 link/ipc/UI |
 | `src/mainwindow.{h,cpp}` | 1024×600 布局：状态栏 32px / 预览区 / 右栏车位·车牌 / 底栏闸+事件行；弹卡 3s（DENY 红） |
-| `src/k210_link.{h,cpp}` | k210_link 接收线程：**text(console base64，现役链路) + binary(protocols §0/§2 帧协议) 双解析 auto 同跑** + file 模式；JPEG 软解在线程内，UI 只取最新帧（丢帧保最新） |
+| `src/cam_link.{h,cpp}` | cam_link 接收线程：**text(console base64，现役链路) + binary(protocols §0/§2 帧协议) 双解析 auto 同跑** + file 模式；JPEG 软解在线程内，UI 只取最新帧（丢帧保最新） |
 | `src/ipc_reader.{h,cpp}` | `/park_shm` 读端（seq 双读防撕裂）+ eventfd(P6-02) 或 200ms 轮询；**shm 不在时自动 demo 模拟器**（车位漂移/开闸/弹卡/事件） |
 | `src/ipc_writer.{h,cpp}` | **`/park_shm` 写端（Core1 业务写端，core1_business spec §5）**：`O_RDWR` 挂载 + 版本自检；1s 心跳 `hb_core1`、识别结果回写（`plate/confidence/result_source/result_valid` + `evt RESULT`）、低置信/失败置 `cloud_pending`、远程开/关闸脉冲 `req_gate_*`、200ms 消费 `evt_c0`；**只写 Core1 归属字段**（静态检查 tools/check_static.py 有负向断言） |
 | `src/park_shm.h` | `park_shm_t` 布局（PhaseMd/07 P6-01），Core0 落地后与 `core0_service/ipc_shm` 合并为公共头 |
@@ -102,7 +102,7 @@ park_ui --demo on                           # 首次验证用 demo；正式随 s
 
 | 元素 | 现状 |
 |---|---|
-| 预览视频 | ✅ k210_link 线程解码、100ms 取最新帧；text 链路即现役 console base64 |
+| 预览视频 | ✅ cam_link 线程解码、100ms 取最新帧；text 链路即现役 console base64 |
 | 车牌/置信度/来源 | 弹卡：真机走 K210 0xC2/0xC3 帧（binary 链路）或 demo；常驻栏读 shm `plate/confidence/result_source` |
 | 车位/闸/故障字 | shm `free/used/gate_state/link_flags`（eventfd 0x03 到位后自动事件驱动，`--eventfd` 接入；现在 200ms 轮询，KPI ≤500ms 满足） |
 | 云状态 | ✅ 三级优先：demo > shm `cloud_pending=1`（`CLOUD:兜底中`，Core0 镜像，单一事实源）> 第7步云客户端健康（idle/ok/no key/超时/断网演练/失败分类） |

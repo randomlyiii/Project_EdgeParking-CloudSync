@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: ascii -*-
-# K210 relay receiver over TCP (edge_hub on the RK3588 -> park_ui link).
-# Same K2: line protocol as k210_preview_rx_text.py, transport = TCP socket.
+# Camera relay receiver over TCP (edge_hub on the RK3588 -> park_ui link).
+# Same K2: line protocol as cam_relay_rx_tcp.py, transport = TCP socket.
 # Usage: python3 k210_relay_rx_tcp.py [rk3588] [8089] [--seconds 10]
 #
 # Prints what flows on the relay (stats) and saves the newest complete JPEG

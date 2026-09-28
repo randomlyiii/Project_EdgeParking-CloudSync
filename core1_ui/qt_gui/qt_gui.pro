@@ -12,7 +12,7 @@ TEMPLATE  = app
 SOURCES += \
     src/main.cpp \
     src/mainwindow.cpp \
-    src/k210_link.cpp \
+    src/cam_link.cpp \
     src/ipc_reader.cpp \
     src/ipc_writer.cpp \
     src/cloud_settings.cpp \
@@ -23,7 +23,7 @@ SOURCES += \
 
 HEADERS += \
     src/mainwindow.h \
-    src/k210_link.h \
+    src/cam_link.h \
     src/ipc_reader.h \
     src/ipc_writer.h \
     src/park_shm.h \

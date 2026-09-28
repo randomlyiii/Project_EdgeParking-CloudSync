@@ -24,7 +24,7 @@
 
 #include "ipc_reader.h"
 
-class K210Link;
+class CamLink;
 class QPushButton;
 
 enum CloudState { Unknown, Online, Offline };
@@ -34,7 +34,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
-    void setLink(K210Link *link) { m_link = link; }
+    void setLink(CamLink *link) { m_link = link; }
     void setIpc(IpcReader *ipc) { m_ipc = ipc; }
 
 signals:
@@ -80,7 +80,7 @@ private:
     void applyCloudChip();
 
     /* --- data providers --- */
-    K210Link *m_link = nullptr;
+    CamLink *m_link = nullptr;
     IpcReader *m_ipc = nullptr;
 
     /* --- status bar --- */

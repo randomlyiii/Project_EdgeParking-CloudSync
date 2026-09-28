@@ -1,5 +1,5 @@
 #include "mainwindow.h"
-#include "k210_link.h"
+#include "cam_link.h"
 
 #include <QDateTime>
 #include <QFontMetrics>

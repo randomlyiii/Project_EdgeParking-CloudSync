@@ -25,7 +25,7 @@ for tool in qmake make; do
 done
 
 # Recreate qmake outputs so stale moc files cannot survive source transfers.
-rm -f Makefile build/k210_link.moc build/moc_*.cpp
+rm -f Makefile build/cam_link.moc build/moc_*.cpp
 qmake && make -j4
 
 echo "[ok] built: bin/park_ui"

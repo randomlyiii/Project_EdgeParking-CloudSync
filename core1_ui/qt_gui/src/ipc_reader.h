@@ -50,7 +50,7 @@ public:
 signals:
     void snapshotChanged(const IpcSnapshot &snap);
     void eventMessage(const QString &msg);
-    /* demo only: simulated recognition popups (real ones come from K210Link) */
+    /* demo only: simulated recognition popups (real ones come from CamLink) */
     void platePopup(const QString &plate, double confidence, int source,
                     bool deny);
 
