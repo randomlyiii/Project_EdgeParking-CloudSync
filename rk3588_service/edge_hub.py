@@ -239,8 +239,13 @@ class CameraThread(threading.Thread):
         self._w = width
         self._h = height
         self._camFps = max(1, cam_fps)
-        self._relayEvery = max(1, int(round(float(cam_fps) /
-                                            max(1, relay_fps))))
+        # time-based relay cadence (2026-09-28): fixed wall-clock period,
+        # decoupled from the capture loop. The old every-N-frames scheme
+        # relayed on frame COUNT, so one >33ms capture hiccup shifted the
+        # whole cadence - the 30 fps stream juddered while 15 fps (bigger
+        # budget) was perfectly steady.
+        self._relayPeriod = 1.0 / float(max(1, relay_fps))
+        self._nextRelay = 0.0
         self._quality = jpeg_quality
         self._watch = watch
         # draw the ROI rectangle into the RELAYED frame (not the one the
@@ -272,9 +277,10 @@ class CameraThread(threading.Thread):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._w)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._h)
             cap.set(cv2.CAP_PROP_FPS, self._camFps)
-            print("cam: %s open %dx%d@%dfps relay every %d frame(s)"
+            self._nextRelay = time.time() + self._relayPeriod
+            print("cam: %s open %dx%d@%dfps relay %.1fms"
                   % (self._dev, self._w, self._h, self._camFps,
-                     self._relayEvery), flush=True)
+                     self._relayPeriod * 1000.0), flush=True)
             got = 0
             sent = 0
             statAt = time.time()
@@ -294,7 +300,15 @@ class CameraThread(threading.Thread):
                     jpeg = buf.tobytes()
                     self._latest["jpeg"] = jpeg
                     self._latest["at"] = int(time.time() * 1000)
-                    if got % self._relayEvery == 0:
+                    now = time.time()
+                    if now >= self._nextRelay:
+                        # advance the DEADLINE GRID monotonically (do NOT
+                        # re-anchor on `now`): with a capture ~30 ms and a
+                        # 33 ms period, re-anchoring made the phase walk and
+                        # relay every other frame (measured 35/65 ms
+                        # alternation, 18 fps). A fixed grid relays on the
+                        # first capture past each deadline - uniform cadence.
+                        self._nextRelay += self._relayPeriod
                         sent += 1
                         relay_jpeg = jpeg
                         if self._drawBox is not None:
