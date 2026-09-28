@@ -74,9 +74,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&m_popTimer, &QTimer::timeout, m_popup, &QWidget::hide);
 
     /* Preview pull rate = display frame rate (each tick paints the newest
-     * decoded frame). 60 ms ~ 15 fps, matching the edge hub relay
-     * (--relay-fps 15); 100 ms (=10 fps) was the K210-serial era. */
-    m_frameTimer.start(60);
+     * decoded frame). 33 ms ~ 30 fps, matching the edge hub relay
+     * (--relay-fps 30); 100 ms (=10 fps) was the K210-serial era and
+     * 60 ms (=15 fps) the first UVC bring-up. */
+    m_frameTimer.start(33);
     m_upTimer.start();              /* uptime chip (2026-09-27) */
     m_clockTimer.start(1000);
     m_tickerTimer.start(4000);
