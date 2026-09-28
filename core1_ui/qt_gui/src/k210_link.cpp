@@ -194,6 +194,7 @@ private:
     /* --- fd --- */
     int m_fd = -1;
     int m_sock = -1;
+    qint64 m_lastRxMs = 0;      /* liveness watchdog (ghost fix 2026-09-28) */
     bool m_up = false;
     bool m_openFailLogged = false;   /* one-shot: report a missing device once */
 
@@ -427,6 +428,7 @@ void K210LinkWorker::run()
             {
                 errStreak = 0;
                 m_openFailLogged = false;
+                m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
                 setUp(true);
             }
             else
@@ -467,13 +469,28 @@ void K210LinkWorker::run()
             continue;
         }
         if (r == 0)
+        {
+            /* liveness watchdog: the hub sends [stat] every 2 s, so >5 s of
+             * total silence on a connected socket means a ghost (half-open
+             * after a hub-side slow-client drop, 2026-09-28). Close it and
+             * let the reconnect loop run. */
+            if (m_lastRxMs != 0 &&
+                QDateTime::currentMSecsSinceEpoch() - m_lastRxMs > 5000)
+            {
+                qWarning("k210 link: silent >5s - dropping ghost connection");
+                m_lastRxMs = 0;
+                closeLink();
+                setUp(false);
+            }
             continue; /* idle; link freshness judged by data */
+        }
 
         quint8 buf[4096];
         int n = int(::read(fd, buf, sizeof(buf)));
         if (n > 0)
         {
             errStreak = 0;
+            m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
             feed(QByteArray(reinterpret_cast<const char *>(buf), n));
         }
         else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)

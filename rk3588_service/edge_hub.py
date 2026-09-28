@@ -124,6 +124,22 @@ class LineHub(object):
                 dead.append(q)
         for q in dead:
             self.remove(q)
+            # GHOST FIX (2026-09-28): without the sentinel the handler
+            # thread stayed blocked on q.get() forever, leaving the TCP
+            # connection half-open - the client saw a live-but-silent socket
+            # and never reconnected (frozen LCD at 30 fps). Evict the queued
+            # lines (that is what "dropped" means) and push None so the
+            # handler wakes and closes the socket. put_nowait only: the
+            # broadcast hot path must NEVER block on a dead client.
+            try:
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
 
     def client_count(self):
         with self._lock:
@@ -141,6 +157,9 @@ def make_handler(hub):
             try:
                 while True:
                     payload = q.get()
+                    if payload is None:      # slow-client drop sentinel
+                        break                # close the socket, force a
+                                             # client-side reconnect
                     self.wfile.write(payload)
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
