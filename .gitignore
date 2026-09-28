@@ -21,6 +21,9 @@ build/
 *.txt
 error.txt
 key.txt
+AGENTS.md
+*.md
+验收IMG
 
 # ---- local build/run artifacts + stale copies (2026-09-11) ----
 *.exe
@@ -47,6 +50,9 @@ wpa_supplicant.conf
 **/wpa_supplicant.conf
 park-ui.env
 **/park-ui.env
+
+# ---- PhaseMd: 云端专文只留本地，不进仓库 ----
+PhaseMd/08_第7步_Linux与云端通讯.md
 
 # never ignore the templates themselves
 !sample_*
