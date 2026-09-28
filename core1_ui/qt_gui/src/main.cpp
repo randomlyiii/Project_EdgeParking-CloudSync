@@ -274,7 +274,7 @@ int main(int argc, char *argv[])
         QImage frame;
         if (!link.latestFrame(&frame)) {
             win.pushEvent(QStringLiteral(
-                "cloud: no K210 frame yet, recheck skipped"));
+                "cloud: no camera frame yet, recheck skipped"));
             return;
         }
         cloud.recognize(frame, cset.writeback, reason);
@@ -302,7 +302,7 @@ int main(int argc, char *argv[])
                          QImage frame;
                          if (!link.latestFrame(&frame)) {
                              win.pushEvent(QStringLiteral(
-                                 "cloud: fallback failed - no K210 frame"));
+                                 "cloud: fallback failed - no camera frame"));
                              writer.clearCloudPending();
                              return;
                          }

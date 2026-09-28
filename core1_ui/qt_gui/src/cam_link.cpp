@@ -404,7 +404,7 @@ void CamLinkWorker::closeSocket()
 void CamLinkWorker::run()
 {
     m_flip = flipModeFromEnv();
-    qWarning("k210 link: orient=%s (build marker %s, env PARK_UI_K210_FLIP)",
+    qWarning("cam link: orient=%s (build marker %s, env PARK_UI_K210_FLIP)",
              flipModeName(m_flip), g_orientMarker);
     if (mode == "none")
     {
@@ -440,11 +440,11 @@ void CamLinkWorker::run()
                 {
                     m_openFailLogged = true;
                     if (mode == "tcp")
-                        qWarning("k210 link: cannot connect %s:%d - "
+                        qWarning("cam link: cannot connect %s:%d - "
                                  "retrying every 2s",
                                  qPrintable(tcpHost), tcpPort);
                     else
-                        qWarning("k210 link: cannot open %s (%s) - "
+                        qWarning("cam link: cannot open %s (%s) - "
                                  "retrying every 2s",
                                  qPrintable(dev), strerror(errno));
                 }
@@ -477,7 +477,7 @@ void CamLinkWorker::run()
             if (m_lastRxMs != 0 &&
                 QDateTime::currentMSecsSinceEpoch() - m_lastRxMs > 5000)
             {
-                qWarning("k210 link: silent >5s - dropping ghost connection");
+                qWarning("cam link: silent >5s - dropping ghost connection");
                 m_lastRxMs = 0;
                 closeLink();
                 setUp(false);

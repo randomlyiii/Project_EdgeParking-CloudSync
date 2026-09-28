@@ -437,7 +437,7 @@ void MainWindow::onSnapshot(const IpcSnapshot &snap)
 
 void MainWindow::onLinkUp(bool up)
 {
-    pushEvent(QString("k210 link %1").arg(up ? "UP" : "DOWN"));
+    pushEvent(QString("cam link %1").arg(up ? "UP" : "DOWN"));
     if (!up) {                             /* link dropped: clear busy (D4) */
         m_k210Busy = false;
         updateBadge();
