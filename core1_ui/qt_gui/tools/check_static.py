@@ -772,6 +772,7 @@ print("[pass] network edits can be written to wpa_supplicant.conf (vendor layout
 #     Core0 stays edge-unaware (the relay is consumed by Core1 only).
 rks = REPO / "rk3588_service"
 for f in ["edge_hub.py", "lpr_server.py", "lpr_decode.py",
+          "hyperlpr3_rknn.py",
           "edge-hub.service", "lpr-server.service"]:
     p = rks / f
     if not p.exists():

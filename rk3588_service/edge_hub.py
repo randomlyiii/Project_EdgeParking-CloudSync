@@ -533,7 +533,8 @@ def main(argv=None):
                     help="path to a yolov8 plate-detection .rknn; when set, "
                          "recognition becomes two-stage (detect -> crop -> "
                          "LPRNet) and --roi is ignored")
-    ap.add_argument("--engine", choices=["lprnet", "hyperlpr3"],
+    ap.add_argument("--engine", choices=["lprnet", "hyperlpr3",
+                                         "hyperlpr3rknn"],
                     default="lprnet",
                     help="recognition engine: lprnet = RKNN NPU (default; "
                          "with --det-model = yolov8 two-stage), hyperlpr3 = "
@@ -578,6 +579,11 @@ def main(argv=None):
             recognizer = HyperLpr3Recognizer()
             print("edge hub: engine=hyperlpr3 (CPU onnxruntime, "
                   "green-plate capable)", flush=True)
+        elif args.engine == "hyperlpr3rknn":
+            from hyperlpr3_rknn import HyperLpr3RknnRecognizer
+            recognizer = HyperLpr3RknnRecognizer()
+            print("edge hub: engine=hyperlpr3rknn (RKNN NPU det320+rec, "
+                  "~18ms/frame, 8/8 acceptance)", flush=True)
         elif args.det_model:
             recognizer = TwoStageRecognizer(
                 args.det_model, args.model, margin=args.det_margin,
