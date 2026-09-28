@@ -1,9 +1,10 @@
-# 端侧 AI · 边云协同停车场（100ASK-MP157 + RK3588，K210 备选）
+# 基于 RK3588 + STM32MP157 的端云协同车牌识别系统
 
+>个人玩玩瑞芯微开发板项目，禁止商用，出事概不负责哈。
 > 定位：基于 100ASK-MP157（STM32MP157：双核 Cortex-A7 + 单核 Cortex-M4）+ **RK3588（定昌 DC-A588，NPU 边缘识别节点）** + **USB 摄像头（UVC，直插 RK3588；K210 为备选采集源，已归档 `other/k210_fw/`）**的停车场**端侧 AI + 边云协同**学习 Demo。
 > 双系统：双 A7 运行同一 Linux（SMP），M4 运行 FreeRTOS；RK3588 运行 Ubuntu（V4L2 采集 + HyperLPR3-RKNN NPU 识别）；K210（CanMV 固件）为备选采集源。
 > 边云协同两种形态：识别置信度不足时调 **DeepSeek Vision API** 兜底（实时）；云平台数据上报为**阶段 4 可选**。
-> 状态：**全链路初步验收已通过（2026-09-28，实拍存档 `验收IMG/`）**；动态状态与下一步见 `AGENTS.md`，本文件不展开。
+> 状态：**全链路初步验收已通过（2026-09-28，实拍存档 `验收IMG/`）**。
 
 ## 分工一览
 
@@ -89,7 +90,7 @@ Project_EdgeParking-CloudSync/  # 本仓库根
 ├── 参考资料/                    # 参考素材：车牌识别实验代码 / k210 / rk3588模型（含 hyperlpr3/ PC 备份 + RESULTS.md）/ bh1750 驱动 / 板卡图
 ├── 云端API调用测试参考/          # DeepSeek 云端 API 独立测试台（cloud_api_test.py + 测试车牌图）
 ├── demo/                       # 演示与开发过程图片
-├── 验收IMG/                     # 初步验收实拍存档（2026-09-28：全览图 / 识别车牌鲁B325DE / 详细信息）
+├── 验收IMG/                     # 初步验收实拍存档
 ├── stm32mp157-已编译固件/        # MP157 已编译固件存档
 └── deploy/
     ├── sample_cloud.conf       # /etc/park/cloud.conf 模板
