@@ -1,0 +1,69 @@
+wifi开启代码：
+ip link set wlan0 up
+wpa_supplicant -B -D nl80211 -i wlan0 -c /etc/wpa_supplicant.conf
+udhcpc -i wlan0
+
+ssh-keygen -R 192.168.xxx.xxx
+ssh root@192.168.xxx.xxx
+ssh-keygen -R 192.168.xxx.xxx
+ssh book@192.168.xxx.xxx
+// vm虚拟机路口转发
+sudo ip route add 192.168.xxx.xxx via 192.168.xxx.xxx dev ens33
+
+cd D:\Projects\Project_EdgeParking-CloudSync\
+scp .\m4_fw\CM4\Debug\m4_fw_CM4.elf root@192.168.xxx.xxx:/lib/firmware/m4_fw.elf
+
+ubuntu(PC)关机：
+sudo shutdown -h now
+
+####################
+### 以下按 PC -> book -> 板 顺序，每段第一行标明在哪台机器跑；粘到 book/板子的命令只用 ASCII
+###
+### [1] 本机(Windows PowerShell)：源码 + deploy 送给 book
+cd D:\Projects\Project_EdgeParking-CloudSync\core1_ui
+scp -r .\qt_gui book@192.168.xxx.xxx:core1_ui/
+cd D:\Projects\Project_EdgeParking-CloudSync\core0_service
+scp -r .\* book@192.168.xxx.xxx:core0_service/
+cd D:\Projects\Project_EdgeParking-CloudSync
+scp -r .\deploy book@192.168.xxx.xxx:~/
+###
+### [2] book：编 park_ui（先试 build_arm.sh，报错就用下面那行兜底）
+cd ~/core1_ui/qt_gui && sh tools/build_arm.sh
+export SDK=/home/book/100ask_stm32mp157_pro-sdk/ToolChain/arm-buildroot-linux-gnueabihf_sdk-buildroot; export PATH=$SDK/bin:$PATH; SYS=$SDK/arm-buildroot-linux-gnueabihf/sysroot; LEGACY=/home/book/stm32mp157/ST-Buildroot/output/host; mkdir -p $(dirname $LEGACY) && ln -s $SDK $LEGACY; cd ~/core1_ui/qt_gui; rm -f Makefile .qmake.stash; qmake QMAKE_CC=$SDK/bin/arm-buildroot-linux-gnueabihf-gcc QMAKE_CXX=$SDK/bin/arm-buildroot-linux-gnueabihf-g++; sed -i "s|$LEGACY|$SDK|g; s|--sysroot=[^ ]*|--sysroot=$SYS|g" Makefile; touch src/*.cpp src/*.h; make -j4; ls -l bin/park_ui; strings bin/park_ui | grep -c 'python transport'
+###
+### [3] book：编 core0（core0_business + core1_stub）
+export SDK=/home/book/100ask_stm32mp157_pro-sdk/ToolChain/arm-buildroot-linux-gnueabihf_sdk-buildroot; export PATH=$SDK/bin:$PATH; cd ~/core0_service; make CROSS_COMPILE=arm-buildroot-linux-gnueabihf- core0_business core1_stub; file core0_business core1_stub
+###
+### [4] book -> 板：二进制 + deploy
+ssh root@192.168.xxx.xxx "mkdir -p /root/core0_service"
+cd ~/core1_ui/qt_gui && scp bin/park_ui root@192.168.xxx.xxx:/root/park_ui
+cd ~/core0_service && scp core0_business core1_stub root@192.168.xxx.xxx:/root/core0_service/
+cd ~ && scp -r deploy root@192.168.xxx.xxx:/root/
+###
+### [5] 板：安装 + 起服务 + 自检
+sh /root/deploy/systemd/install_all.sh
+systemctl restart core0-bus park-ui; sleep 5
+date -u;
+systemctl is-active park-clock park-ui core0-bus
+ping -c2 -W2 rk3588
+ls -l /dev/shm/park_shm /dev/ttyRPMSG0
+journalctl -u park-ui -n 30 --no-pager | grep -iE 'cloud|attach|k210 link';
+sleep 3;
+systemctl restart m4-load;
+
+
+
+
+###
+### [6] 云端：CA + 配置 + 时钟
+copy "C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt" .\ca.pem
+ssh root@192.168.xxx.xxx "install -d -m 700 /etc/park; cp /root/deploy/sample_cloud.conf /etc/park/cloud.conf; chmod 600 /etc/park/cloud.conf"
+scp .\ca.pem root@192.168.xxx.xxx:/etc/park/ca.pem
+ssh root@192.168.xxx.xxx "vi /etc/park/cloud.conf"
+ssh root@192.168.xxx.xxx "date -u; systemctl restart park-ui; sleep 3; journalctl -u park-ui -n 20 --no-pager | grep -iE 'cloud|TLS'"
+### date -u -s "YYYY-MM-DD HH:MM:SS"
+### 改 WiFi 配置：齿轮 -> 网络 -> 填 SSID/密码 -> 「保存」(只写 /etc/wpa_supplicant.conf 不回滚) -> 「联网」生效
+ssh root@192.168.xxx.xxx "cat /etc/wpa_supplicant.conf"
+###
+### [7] 云失败怎么读: no network|lease=no -> restart wifi-up ｜ certificate|not yet valid -> date -u -s ｜ 401 -> key 与厂商不匹配 ｜ tls|timeout -> ca.pem ｜ empty content|body xxxB -> 看 journal 里的 body 片段（模型名/max_tokens）
+
